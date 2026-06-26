@@ -1,0 +1,119 @@
+# ContextForge MCP Gateway — Local Development Stack
+# Phase 1: minimal setup — gateway + postgres + redis
+#
+# Usage:
+#   make up        — start all services
+#   make down      — stop and remove containers
+#   make logs      — tail gateway logs
+#   make test      — smoke test endpoints
+#
+# Admin UI:   http://localhost:4444
+# MCP endpoint: http://localhost:4444/v1/
+# Health:     http://localhost:4444/health
+
+networks:
+  mcpnet:
+    driver: bridge
+
+volumes:
+  pgdata:
+  redisdata:
+
+services:
+
+  # ── PostgreSQL — primary datastore ──────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    networks: [mcpnet]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: mcp
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mcp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Redis — caching and session storage ─────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks: [mcpnet]
+    volumes:
+      - redisdata:/data
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── ContextForge MCP Gateway ─────────────────────────────────────────────
+  gateway:
+    image: ghcr.io/ibm/mcp-context-forge:latest
+    restart: unless-stopped
+    networks: [mcpnet]
+    ports:
+      - "4444:4444"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Server
+      HOST: 0.0.0.0
+      PORT: 4444
+      HTTP_SERVER: gunicorn
+      TRANSPORT_TYPE: streamablehttp
+
+      # Database — direct postgres (no pgbouncer for local dev)
+      DATABASE_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-changeme}@postgres:5432/mcp
+      # Run migrations on startup (set to true after first run to speed up restarts)
+      MCPGATEWAY_SKIP_MIGRATIONS: ${MCPGATEWAY_SKIP_MIGRATIONS:-false}
+
+      # Redis
+      REDIS_URL: redis://redis:6379/0
+      CACHE_TYPE: redis
+      REDIS_PARSER: hiredis
+
+      # Auth — CHANGE THESE before exposing to any network
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-local-dev-jwt-secret-change-me-32chars}
+      JWT_ALGORITHM: HS256
+      JWT_AUDIENCE: mcpgateway-api
+      JWT_ISSUER: mcpgateway
+      AUTH_ENCRYPTION_SECRET: ${AUTH_ENCRYPTION_SECRET:-local-dev-salt-change-me}
+      DEFAULT_USER_PASSWORD: ${DEFAULT_USER_PASSWORD:-changeme}
+
+      # Admin UI credentials
+      EMAIL_AUTH_ENABLED: "true"
+      PLATFORM_ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      PLATFORM_ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
+      PASSWORD_CHANGE_ENFORCEMENT_ENABLED: "false"   # relaxed for local dev
+
+      # CORS — localhost only
+      APP_DOMAIN: http://localhost:4444
+
+      # Admin UI + API — enable for local dev
+      MCPGATEWAY_UI_ENABLED: "true"
+      MCPGATEWAY_ADMIN_API_ENABLED: "true"
+
+      # Metrics
+      ENABLE_METRICS: "true"
+
+      # Allow local upstream MCP servers (needed for Phase 1 testing)
+      SSRF_ALLOW_LOCALHOST: "true"
+      SSRF_ALLOW_PRIVATE_NETWORKS: "true"
+      SSRF_DNS_FAIL_CLOSED: "false"
+
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4444/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

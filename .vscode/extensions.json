@@ -4,7 +4,6 @@
     "ms-kubernetes-tools.vscode-kubernetes-tools",
     "ms-azuretools.vscode-docker",
     "redhat.vscode-yaml",
-    "ms-vscode.azure-account",
     "ms-azure-devops.azure-pipelines",
     "GitHub.vscode-github-actions",
     "GitHub.copilot",
@@ -13,6 +12,7 @@
     "ms-python.vscode-pylance",
     "timonwong.shellcheck",
     "foxundermoon.shell-format",
-    "bierner.markdown-mermaid"
+    "bierner.markdown-mermaid",
+    "ms-vscode.azure-account"
   ]
 }
