@@ -1,0 +1,81 @@
+{
+  "name": "AI Engineering — ContextForge Dev",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bullseye",
+
+  "features": {
+    "ghcr.io/devcontainers/features/azure-cli:1": {
+      "installBicep": true,
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
+      "kubectl": "latest",
+      "helm": "latest",
+      "minikube": "latest"
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "dockerDashComposeVersion": "v2"
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    },
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+
+  "postCreateCommand": "bash scripts/setup.sh",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-azuretools.vscode-bicep",
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "ms-azuretools.vscode-docker",
+        "redhat.vscode-yaml",
+        "ms-vscode.azure-account",
+        "ms-azure-devops.azure-pipelines",
+        "GitHub.vscode-github-actions",
+        "GitHub.copilot",
+        "anthropics.claude-code",
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "timonwong.shellcheck",
+        "foxundermoon.shell-format",
+        "hediet.vscode-drawio",
+        "bierner.markdown-mermaid"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true,
+        "files.eol": "\n",
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "yaml.schemas": {
+          "kubernetes": [
+            "infra/helm/**/*.yaml",
+            "infra/helm/**/*.yml"
+          ]
+        },
+        "yaml.format.enable": true,
+        "bicep.enableSurveys": false,
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "shellcheck.enable": true,
+        "shellcheck.run": "onType",
+        "git.enableSmartCommit": true,
+        "git.confirmSync": false
+      }
+    }
+  },
+
+  "forwardPorts": [4444, 5432, 6379, 9090, 3000],
+  "portsAttributes": {
+    "4444": { "label": "ContextForge Gateway", "onAutoForward": "notify" },
+    "5432": { "label": "PostgreSQL", "onAutoForward": "silent" },
+    "6379": { "label": "Redis", "onAutoForward": "silent" },
+    "9090": { "label": "Prometheus", "onAutoForward": "notify" },
+    "3000": { "label": "Grafana", "onAutoForward": "notify" }
+  },
+
+  "remoteUser": "vscode",
+  "mounts": [
+    "source=${localEnv:HOME}/.azure,target=/home/vscode/.azure,type=bind,consistency=cached"
+  ]
+}

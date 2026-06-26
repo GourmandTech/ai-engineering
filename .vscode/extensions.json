@@ -1,0 +1,18 @@
+{
+  "recommendations": [
+    "ms-azuretools.vscode-bicep",
+    "ms-kubernetes-tools.vscode-kubernetes-tools",
+    "ms-azuretools.vscode-docker",
+    "redhat.vscode-yaml",
+    "ms-vscode.azure-account",
+    "ms-azure-devops.azure-pipelines",
+    "GitHub.vscode-github-actions",
+    "GitHub.copilot",
+    "anthropics.claude-code",
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "timonwong.shellcheck",
+    "foxundermoon.shell-format",
+    "bierner.markdown-mermaid"
+  ]
+}

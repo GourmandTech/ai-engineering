@@ -1,0 +1,49 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make up)",
+      "Bash(make down)",
+      "Bash(make logs)",
+      "Bash(make test)",
+      "Bash(make minikube-start)",
+      "Bash(make helm-status)",
+      "Bash(make helm-install)",
+      "Bash(kubectl get:*)",
+      "Bash(kubectl describe:*)",
+      "Bash(kubectl logs:*)",
+      "Bash(kubectl top:*)",
+      "Bash(kubectl events:*)",
+      "Bash(helm lint:*)",
+      "Bash(helm template:*)",
+      "Bash(helm diff:*)",
+      "Bash(helm status:*)",
+      "Bash(helm list:*)",
+      "Bash(az account show:*)",
+      "Bash(az group list:*)",
+      "Bash(az aks show:*)",
+      "Bash(az aks list:*)",
+      "Bash(az resource list:*)",
+      "Bash(docker compose ps:*)",
+      "Bash(docker compose logs:*)",
+      "Bash(docker ps:*)",
+      "Bash(curl -sf http://localhost:*)",
+      "Bash(minikube status:*)",
+      "Bash(pip install:*)",
+      "Bash(python:*)"
+    ],
+    "deny": [
+      "Bash(kubectl delete:*)",
+      "Bash(kubectl apply:*)",
+      "Bash(kubectl rollout restart:*)",
+      "Bash(helm upgrade:*)",
+      "Bash(helm install:*)",
+      "Bash(helm uninstall:*)",
+      "Bash(az * create:*)",
+      "Bash(az * delete:*)",
+      "Bash(az * update:*)",
+      "Bash(az role assignment create:*)",
+      "Bash(git push:*)",
+      "Bash(rm -rf:*)"
+    ]
+  }
+}
