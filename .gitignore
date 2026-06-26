@@ -30,5 +30,8 @@ Thumbs.db
 infra/helm/charts/
 *.tgz
 
+# ContextForge upstream repo (fetched by make chart-fetch, not committed)
+.contextforge/
+
 # Azure deployment output artifacts
 azuredeploy.*.json

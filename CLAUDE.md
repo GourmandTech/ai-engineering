@@ -3,6 +3,30 @@
 ## Mission
 Personal SRE/DevOps learning platform. Goal: demonstrate self-advancement in AI-assisted engineering, agentic coding, and AI automation for job placement. Core background: Microsoft Azure, Azure DevOps, Bicep. Expanding into: AI/ML Ops, agentic infrastructure, federated MCP.
 
+## Current State (updated 2026-06-26)
+
+### Phase 1 — COMPLETE ✅
+- Docker Compose stack running locally at `http://localhost:4444/admin`
+- Key fix: `MCPGATEWAY_UI_ENABLED: "true"` and `MCPGATEWAY_ADMIN_API_ENABLED: "true"` required in env (default is False in latest image)
+- Devcontainer: `mcr.microsoft.com/devcontainers/python:3.12-bookworm` base, `docker-outside-of-docker` feature, `"runArgs": ["--network=host"]` required for Minikube networking
+
+### Phase 2 — IN PROGRESS 🔄
+Last stopped here. Minikube cluster `mcpgw` was successfully started on Windows (Surface Pro). Stopped due to CPU constraints — continuing on MacBook Pro M1.
+
+**Next steps to resume:**
+1. `make chart-fetch` — clones IBM/mcp-context-forge to `.contextforge/` (run once)
+2. Add to `/etc/hosts`: `$(minikube ip --profile mcpgw)  gateway.local`
+3. `minikube image load ghcr.io/ibm/mcp-context-forge:1.0.0-RC-3 --profile mcpgw` — pre-pull image
+4. `make helm-install` — deploys chart with `infra/helm/values.yaml` overrides
+5. Verify: `curl http://gateway.local/health` and admin UI at `http://gateway.local/admin`
+
+**M1/arm64 note:** ContextForge image (`ghcr.io/ibm/mcp-context-forge`) must support `linux/arm64`. Check with `docker manifest inspect ghcr.io/ibm/mcp-context-forge:1.0.0-RC-3` before pulling. If arm64 is missing, use `--platform linux/amd64` (Rosetta) in docker-compose.yml and Helm values extraEnv.
+
+**Helm chart location:** `.contextforge/charts/mcp-stack` (upstream, not committed — listed in .gitignore)
+**Our overrides:** `infra/helm/values.yaml` — 1 replica, pinned tag `1.0.0-RC-3`, ingress on `gateway.local`, TLS off, admin UI via extraEnv
+
+---
+
 ## Active Project: IBM ContextForge MCP Gateway on AKS
 Deploying IBM ContextForge — an open-source AI Gateway that federates MCP servers, REST APIs, gRPC services, and AI agents into a single unified endpoint — on Azure Kubernetes Service using Bicep IaC and Helm.
 
@@ -78,8 +102,8 @@ Deploying IBM ContextForge — an open-source AI Gateway that federates MCP serv
 
 | Phase | Focus | Status |
 |---|---|---|
-| 1 | Local Docker Compose — understand ContextForge fundamentals | ⬜ |
-| 2 | Minikube — deploy full Helm stack, learn k8s primitives | ⬜ |
+| 1 | Local Docker Compose — understand ContextForge fundamentals | ✅ |
+| 2 | Minikube — deploy full Helm stack, learn k8s primitives | 🔄 |
 | 3 | AKS — deploy to Azure with Bicep IaC, production-grade config | ⬜ |
 | 4 | Federated MCP — register multiple MCP servers, RBAC + OAuth | ⬜ |
 | 5 | Agent automation — A2A protocol, multi-agent orchestration | ⬜ |

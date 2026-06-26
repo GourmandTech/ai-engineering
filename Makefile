@@ -11,7 +11,9 @@ RESOURCE_GROUP   ?= rg-contextforge-dev
 AKS_CLUSTER      ?= aks-contextforge-dev
 NAMESPACE        ?= mcp
 HELM_RELEASE     ?= mcp-stack
-HELM_CHART       ?= ./infra/helm
+HELM_CHART       ?= .contextforge/charts/mcp-stack
+HELM_VALUES      ?= infra/helm/values.yaml
+MINIKUBE_PROFILE ?= mcpgw
 AZ_LOCATION      ?= eastus
 MCP_HOST         ?= localhost:4444
 
@@ -50,34 +52,54 @@ test: ## Smoke test MCP endpoints
 # ─────────────────────────────────────────────────────────────
 # Minikube — Local Kubernetes
 # ─────────────────────────────────────────────────────────────
-minikube-start: ## Start local Minikube cluster with required addons
-	minikube start --cpus=4 --memory=8192 \
-	  --addons=ingress,metrics-server
-	kubectl config use-context minikube
-	@echo "✓ Minikube ready. Context: $$(kubectl config current-context)"
+chart-fetch: ## Clone ContextForge upstream repo (run once before helm-install)
+	@if [ -d ".contextforge" ]; then \
+	  echo "✓ .contextforge already present. Remove it first to re-fetch."; \
+	else \
+	  git clone --depth 1 https://github.com/IBM/mcp-context-forge.git .contextforge; \
+	  echo "✓ Chart available at .contextforge/charts/mcp-stack"; \
+	fi
 
-helm-install: ## Install ContextForge Helm chart to Minikube
+minikube-start: ## Start Minikube cluster (profile: mcpgw) with ingress + ingress-dns
+	minikube start \
+	  --profile $(MINIKUBE_PROFILE) \
+	  --driver docker \
+	  --cpus 4 \
+	  --memory 6144 \
+	  --addons ingress,ingress-dns,metrics-server
+	kubectl config use-context $(MINIKUBE_PROFILE)
+	@echo "✓ Minikube ready. Context: $$(kubectl config current-context)"
+	@echo "  Add to /etc/hosts: $$(minikube ip --profile $(MINIKUBE_PROFILE))  gateway.local"
+
+helm-install: ## Install ContextForge to Minikube (requires: make chart-fetch first)
+	@test -d "$(HELM_CHART)" || (echo "ERROR: Chart not found. Run: make chart-fetch" && exit 1)
 	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
 	  --namespace $(NAMESPACE) --create-namespace \
-	  --values $(HELM_CHART)/values.yaml \
-	  --wait --timeout=5m
+	  --values $(HELM_VALUES) \
+	  --kube-context $(MINIKUBE_PROFILE) \
+	  --wait --timeout=8m
 	@$(MAKE) helm-status
 
 helm-status: ## Show Helm release status and pod health
 	@echo "=== Helm Release ==="
-	helm status $(HELM_RELEASE) -n $(NAMESPACE)
+	helm status $(HELM_RELEASE) -n $(NAMESPACE) --kube-context $(MINIKUBE_PROFILE)
 	@echo "=== Pods ==="
-	kubectl get pods -n $(NAMESPACE) -o wide
+	kubectl get pods -n $(NAMESPACE) -o wide --context $(MINIKUBE_PROFILE)
 	@echo "=== Services ==="
-	kubectl get svc -n $(NAMESPACE)
+	kubectl get svc -n $(NAMESPACE) --context $(MINIKUBE_PROFILE)
 
 helm-diff: ## Show diff between deployed and local chart (requires helm-diff plugin)
 	helm diff upgrade $(HELM_RELEASE) $(HELM_CHART) \
 	  --namespace $(NAMESPACE) \
-	  --values $(HELM_CHART)/values.yaml
+	  --values $(HELM_VALUES) \
+	  --kube-context $(MINIKUBE_PROFILE)
 
-port-forward: ## Port-forward gateway to localhost:4444 (Minikube/AKS)
-	kubectl port-forward svc/mcp-gateway 4444:4444 -n $(NAMESPACE)
+helm-uninstall: ## Uninstall the Helm release from Minikube
+	helm uninstall $(HELM_RELEASE) -n $(NAMESPACE) --kube-context $(MINIKUBE_PROFILE)
+
+port-forward: ## Port-forward gateway to localhost:4444 (Minikube)
+	kubectl port-forward svc/$(HELM_RELEASE)-mcpcontextforge 4444:4444 \
+	  -n $(NAMESPACE) --context $(MINIKUBE_PROFILE)
 
 # ─────────────────────────────────────────────────────────────
 # Azure — Authentication & Infra
@@ -141,7 +163,7 @@ mcp-register: ## Register a new MCP server (MCP_NAME and MCP_URL required)
 # Quality & Maintenance
 # ─────────────────────────────────────────────────────────────
 lint: ## Lint Helm charts and Bicep templates
-	helm lint $(HELM_CHART) --values $(HELM_CHART)/values.yaml
+	helm lint $(HELM_CHART) --values $(HELM_VALUES)
 	@if [ -f infra/bicep/main.bicep ]; then az bicep build --file infra/bicep/main.bicep; fi
 	@echo "✓ Lint passed"
 

@@ -1,0 +1,112 @@
+# ContextForge Helm values — Minikube (Phase 2)
+#
+# Overrides for the upstream chart at .contextforge/charts/mcp-stack
+# These merge on top of the upstream defaults via:
+#   helm upgrade --install ... -f infra/helm/values.yaml
+#
+# WARNING: secrets here are dev-only placeholders.
+# Phase 3 (AKS) will replace these with Azure Key Vault CSI driver refs.
+
+mcpContextForge:
+
+  # ── Replicas & scaling ─────────────────────────────────────────────────────
+  replicaCount: 1                       # single replica for local k8s
+
+  hpa:
+    enabled: false                      # HPA needs metrics-server and more RAM
+
+  # ── Image ──────────────────────────────────────────────────────────────────
+  image:
+    repository: ghcr.io/ibm/mcp-context-forge
+    tag: "1.0.0-RC-3"                  # pinned — never use 'latest' (per CLAUDE.md)
+    pullPolicy: IfNotPresent            # use local cache; avoids re-pull in minikube
+
+  # ── Resource limits ────────────────────────────────────────────────────────
+  # Reduced from upstream defaults (2 CPU / 2Gi) to fit a dev laptop
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+  # ── Ingress ────────────────────────────────────────────────────────────────
+  ingress:
+    enabled: true
+    className: nginx
+    host: gateway.local
+    path: /
+    pathType: Prefix
+    tls:
+      enabled: false                    # no cert-manager on Minikube
+
+  # ── Non-secret config overrides ────────────────────────────────────────────
+  config:
+    # HTTP server
+    HTTP_SERVER: "gunicorn"
+    GUNICORN_WORKERS: "2"
+
+    # CORS — gateway.local only
+    ENVIRONMENT: development
+    APP_DOMAIN: "http://gateway.local"
+    ALLOWED_ORIGINS: '["http://gateway.local"]'
+
+    # SSRF — allow in-cluster service DNS (postgres/redis pods) and localhost
+    SSRF_ALLOW_LOCALHOST: "true"
+    SSRF_ALLOW_PRIVATE_NETWORKS: "true"
+    SSRF_DNS_FAIL_CLOSED: "false"
+
+    # Relaxed security headers for local dev
+    HSTS_ENABLED: "false"
+    SECURE_COOKIES: "false"
+    COOKIE_SAMESITE: "lax"
+
+    # Password policy — relaxed for dev convenience
+    PASSWORD_CHANGE_ENFORCEMENT_ENABLED: "false"
+    ADMIN_REQUIRE_PASSWORD_CHANGE_ON_BOOTSTRAP: "false"
+    DETECT_DEFAULT_PASSWORD_ON_LOGIN: "false"
+    REQUIRE_PASSWORD_CHANGE_FOR_DEFAULT_PASSWORD: "false"
+
+    # Logging
+    LOG_LEVEL: INFO
+    LOG_FORMAT: json
+    DISABLE_ACCESS_LOG: "false"         # keep access logs on in dev
+
+    # Metrics
+    ENABLE_METRICS: "true"
+
+  # ── Admin UI ── injected via extraEnv (not in upstream config section) ─────
+  extraEnv:
+    - name: MCPGATEWAY_UI_ENABLED
+      value: "true"
+    - name: MCPGATEWAY_ADMIN_API_ENABLED
+      value: "true"
+
+  # ── Secrets ────────────────────────────────────────────────────────────────
+  # DEV ONLY — change every value before any non-local deployment
+  secret:
+    # Auth
+    JWT_SECRET_KEY: "minikube-dev-jwt-secret-change-me-min32"
+    AUTH_ENCRYPTION_SECRET: "minikube-dev-enc-salt-change-me-32c"
+
+    # Admin bootstrap
+    PLATFORM_ADMIN_EMAIL: "admin@example.com"
+    PLATFORM_ADMIN_PASSWORD: "changeme"
+    PLATFORM_ADMIN_FULL_NAME: "Platform Administrator"
+    DEFAULT_USER_PASSWORD: "changeme"
+
+    # Auth mode
+    EMAIL_AUTH_ENABLED: "true"
+    AUTH_REQUIRED: "true"
+    MCP_REQUIRE_AUTH: "true"
+
+    # Min secret length — upstream default is 32; our dev keys satisfy that
+    MIN_SECRET_LENGTH: "32"
+    REQUIRE_STRONG_SECRETS: "false"     # allow short dev secrets
+
+# ── Migration job ─────────────────────────────────────────────────────────────
+migration:
+  enabled: true
+  image:
+    tag: "1.0.0-RC-3"                  # must match mcpContextForge.image.tag

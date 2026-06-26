@@ -72,5 +72,6 @@
   },
 
   "remoteUser": "vscode",
-  "mounts": []
+  "mounts": [],
+  "runArgs": ["--network=host"]
 }
