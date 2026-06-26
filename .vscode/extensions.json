@@ -1,18 +1,24 @@
 {
   "recommendations": [
     "ms-azuretools.vscode-bicep",
-    "ms-kubernetes-tools.vscode-kubernetes-tools",
-    "ms-azuretools.vscode-docker",
-    "redhat.vscode-yaml",
+    "ms-azuretools.vscode-azure-resourcegroups",
     "ms-azure-devops.azure-pipelines",
+    "ms-azuretools.vscode-docker",
+    "ms-kubernetes-tools.vscode-kubernetes-tools",
+    "ms-vscode-remote.remote-containers",
+    "tim-koehler.helm-intellisense",
+    "GitHub.vscode-pull-request-github",
     "GitHub.vscode-github-actions",
-    "GitHub.copilot",
+    "GitHub.copilot-chat",
     "anthropics.claude-code",
     "ms-python.python",
     "ms-python.vscode-pylance",
+    "redhat.vscode-yaml",
     "timonwong.shellcheck",
     "foxundermoon.shell-format",
+    "eamodio.gitlens",
+    "ms-vscode.makefile-tools",
     "bierner.markdown-mermaid",
-    "ms-vscode.azure-account"
+    "streetsidesoftware.code-spell-checker"
   ]
 }

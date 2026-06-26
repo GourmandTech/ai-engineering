@@ -18,7 +18,7 @@ mcpContextForge:
   # ── Image ──────────────────────────────────────────────────────────────────
   image:
     repository: ghcr.io/ibm/mcp-context-forge
-    tag: "1.0.0-RC-3"                  # pinned — never use 'latest' (per CLAUDE.md)
+    tag: "v1.0.4"                       # pinned — never use 'latest' (per CLAUDE.md)
     pullPolicy: IfNotPresent            # use local cache; avoids re-pull in minikube
 
   # ── Resource limits ────────────────────────────────────────────────────────
@@ -109,4 +109,4 @@ mcpContextForge:
 migration:
   enabled: true
   image:
-    tag: "1.0.0-RC-3"                  # must match mcpContextForge.image.tag
+    tag: "v1.0.4"                       # must match mcpContextForge.image.tag

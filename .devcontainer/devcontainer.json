@@ -27,20 +27,25 @@
     "vscode": {
       "extensions": [
         "ms-azuretools.vscode-bicep",
-        "ms-kubernetes-tools.vscode-kubernetes-tools",
-        "ms-azuretools.vscode-docker",
-        "redhat.vscode-yaml",
-        "ms-vscode.azure-account",
+        "ms-azuretools.vscode-azure-resourcegroups",
         "ms-azure-devops.azure-pipelines",
+        "ms-azuretools.vscode-docker",
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "tim-koehler.helm-intellisense",
+        "GitHub.vscode-pull-request-github",
         "GitHub.vscode-github-actions",
-        "GitHub.copilot",
+        "GitHub.copilot-chat",
         "anthropics.claude-code",
         "ms-python.python",
         "ms-python.vscode-pylance",
+        "redhat.vscode-yaml",
         "timonwong.shellcheck",
         "foxundermoon.shell-format",
+        "eamodio.gitlens",
+        "ms-vscode.makefile-tools",
+        "bierner.markdown-mermaid",
         "hediet.vscode-drawio",
-        "bierner.markdown-mermaid"
+        "streetsidesoftware.code-spell-checker"
       ],
       "settings": {
         "editor.formatOnSave": true,

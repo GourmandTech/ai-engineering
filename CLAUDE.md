@@ -7,23 +7,24 @@ Personal SRE/DevOps learning platform. Goal: demonstrate self-advancement in AI-
 
 ### Phase 1 — COMPLETE ✅
 - Docker Compose stack running locally at `http://localhost:4444/admin`
+- Confirmed healthy on MacBook Pro M1 (2026-06-26): `make test` returns `{"status":"healthy"}`
 - Key fix: `MCPGATEWAY_UI_ENABLED: "true"` and `MCPGATEWAY_ADMIN_API_ENABLED: "true"` required in env (default is False in latest image)
 - Devcontainer: `mcr.microsoft.com/devcontainers/python:3.12-bookworm` base, `docker-outside-of-docker` feature, `"runArgs": ["--network=host"]` required for Minikube networking
 
 ### Phase 2 — IN PROGRESS 🔄
-Last stopped here. Minikube cluster `mcpgw` was successfully started on Windows (Surface Pro). Stopped due to CPU constraints — continuing on MacBook Pro M1.
+Continuing on MacBook Pro M1. Chart fetched (`make chart-fetch`), image confirmed arm64-native at `v1.0.4`.
 
 **Next steps to resume:**
 1. `make chart-fetch` — clones IBM/mcp-context-forge to `.contextforge/` (run once)
 2. Add to `/etc/hosts`: `$(minikube ip --profile mcpgw)  gateway.local`
-3. `minikube image load ghcr.io/ibm/mcp-context-forge:1.0.0-RC-3 --profile mcpgw` — pre-pull image
+3. `minikube image load ghcr.io/ibm/mcp-context-forge:v1.0.4 --profile mcpgw` — pre-pull image
 4. `make helm-install` — deploys chart with `infra/helm/values.yaml` overrides
 5. Verify: `curl http://gateway.local/health` and admin UI at `http://gateway.local/admin`
 
-**M1/arm64 note:** ContextForge image (`ghcr.io/ibm/mcp-context-forge`) must support `linux/arm64`. Check with `docker manifest inspect ghcr.io/ibm/mcp-context-forge:1.0.0-RC-3` before pulling. If arm64 is missing, use `--platform linux/amd64` (Rosetta) in docker-compose.yml and Helm values extraEnv.
+**M1/arm64 note:** ContextForge image (`ghcr.io/ibm/mcp-context-forge`) must support `linux/arm64`. Check with `docker manifest inspect ghcr.io/ibm/mcp-context-forge:v1.0.4` before pulling. If arm64 is missing, use `--platform linux/amd64` (Rosetta) in docker-compose.yml and Helm values extraEnv.
 
 **Helm chart location:** `.contextforge/charts/mcp-stack` (upstream, not committed — listed in .gitignore)
-**Our overrides:** `infra/helm/values.yaml` — 1 replica, pinned tag `1.0.0-RC-3`, ingress on `gateway.local`, TLS off, admin UI via extraEnv
+**Our overrides:** `infra/helm/values.yaml` — 1 replica, pinned tag `v1.0.4`, ingress on `gateway.local`, TLS off, admin UI via extraEnv
 
 ---
 
