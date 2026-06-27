@@ -9,7 +9,9 @@ Personal SRE/DevOps learning platform. Goal: demonstrate self-advancement in AI-
 - Docker Compose stack running locally at `http://localhost:4444/admin`
 - Confirmed healthy on MacBook Pro M1 (2026-06-26): `make test` returns `{"status":"healthy"}`
 - Key fix: `MCPGATEWAY_UI_ENABLED: "true"` and `MCPGATEWAY_ADMIN_API_ENABLED: "true"` required in env (default is False in latest image)
-- Devcontainer: `mcr.microsoft.com/devcontainers/python:3.12-bookworm` base, `docker-outside-of-docker` feature, `"runArgs": ["--network=host"]` required for Minikube networking
+- Devcontainer: `mcr.microsoft.com/devcontainers/python:3.12-bookworm` base, `docker-outside-of-docker` feature
+- NOTE: `--network=host` was removed from devcontainer runArgs — on Mac Docker Desktop it blocks SSH to sibling containers. Docker Compose access uses container name routing (`gateway-1:4444`).
+- NOTE: Minikube networking — do NOT pass `--network mcpgw` to `minikube start` (causes IP conflict during kicbase creation on Mac). `make minikube-start` lets minikube manage its own Docker network, then connects the devcontainer post-startup.
 
 ### Phase 2 — IN PROGRESS 🔄
 Continuing on MacBook Pro M1. Chart fetched (`make chart-fetch`), image confirmed arm64-native at `v1.0.4`.

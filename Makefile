@@ -15,7 +15,15 @@ HELM_CHART       ?= .contextforge/charts/mcp-stack
 HELM_VALUES      ?= infra/helm/values.yaml
 MINIKUBE_PROFILE ?= mcpgw
 AZ_LOCATION      ?= eastus
-MCP_HOST         ?= localhost:4444
+
+# When running inside a devcontainer (DOOD), route to the gateway container
+# directly via Docker network instead of via host port mapping.
+IN_CONTAINER     := $(shell [ -f /.dockerenv ] && echo true || echo false)
+ifeq ($(IN_CONTAINER),true)
+  MCP_HOST       ?= gateway-1:4444
+else
+  MCP_HOST       ?= localhost:4444
+endif
 
 # ─────────────────────────────────────────────────────────────
 # Help
@@ -29,6 +37,10 @@ help: ## Show this help
 # ─────────────────────────────────────────────────────────────
 up: ## Start ContextForge stack via Docker Compose
 	docker compose up -d
+	@# Connect devcontainer to compose network for direct container-to-container access
+	@if [ -f /.dockerenv ]; then \
+	  docker network connect ai-engineering_mcpnet $$(hostname) 2>/dev/null || true; \
+	fi
 	@echo "Waiting for gateway to be healthy..."
 	@for i in $$(seq 1 30); do \
 	  if curl -sf http://$(MCP_HOST)/health > /dev/null 2>&1; then \
@@ -61,15 +73,32 @@ chart-fetch: ## Clone ContextForge upstream repo (run once before helm-install)
 	fi
 
 minikube-start: ## Start Minikube cluster (profile: mcpgw) with ingress + ingress-dns
+	@# Step 1: Drop any leftover devcontainer connection to mcpgw from a previous run.
+	@# This ensures the devcontainer doesn't hold 172.19.0.2 (the IP minikube assigns kicbase).
+	@if [ -f /.dockerenv ]; then \
+	  docker network disconnect $(MINIKUBE_PROFILE) $$(hostname) 2>/dev/null || true; \
+	fi
+	@# Step 2: Background watcher — polls until kicbase is RUNNING (IP already assigned),
+	@# then joins the devcontainer to the network with a different IP.
+	@# Required so minikube can SSH to kicbase via container IP instead of 127.0.0.1.
+	@if [ -f /.dockerenv ]; then \
+	  ( while ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^$(MINIKUBE_PROFILE)$$"; do \
+	      sleep 1; \
+	    done; \
+	    docker network connect $(MINIKUBE_PROFILE) $$(hostname) 2>/dev/null && \
+	    echo "✓ Devcontainer joined $(MINIKUBE_PROFILE) network" || true ) & \
+	fi
 	minikube start \
 	  --profile $(MINIKUBE_PROFILE) \
 	  --driver docker \
+	  --network $(MINIKUBE_PROFILE) \
 	  --cpus 4 \
 	  --memory 6144 \
+	  --preload=false \
 	  --addons ingress,ingress-dns,metrics-server
 	kubectl config use-context $(MINIKUBE_PROFILE)
 	@echo "✓ Minikube ready. Context: $$(kubectl config current-context)"
-	@echo "  Add to /etc/hosts: $$(minikube ip --profile $(MINIKUBE_PROFILE))  gateway.local"
+	@echo "  Run: echo \\"$$(minikube ip --profile $(MINIKUBE_PROFILE))  gateway.local\\" | sudo tee -a /etc/hosts"
 
 helm-install: ## Install ContextForge to Minikube (requires: make chart-fetch first)
 	@test -d "$(HELM_CHART)" || (echo "ERROR: Chart not found. Run: make chart-fetch" && exit 1)

@@ -1,7 +1,6 @@
 {
   "name": "AI Engineering — ContextForge Dev",
   "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
-
   "features": {
     "ghcr.io/devcontainers/features/azure-cli:1": {
       "installBicep": true,
@@ -20,9 +19,7 @@
     },
     "ghcr.io/devcontainers/features/git:1": {}
   },
-
   "postCreateCommand": "bash scripts/setup.sh",
-
   "customizations": {
     "vscode": {
       "extensions": [
@@ -45,7 +42,8 @@
         "ms-vscode.makefile-tools",
         "bierner.markdown-mermaid",
         "hediet.vscode-drawio",
-        "streetsidesoftware.code-spell-checker"
+        "streetsidesoftware.code-spell-checker",
+        "Anthropic.claude-code"
       ],
       "settings": {
         "editor.formatOnSave": true,
@@ -54,7 +52,10 @@
         "files.eol": "\n",
         "terminal.integrated.defaultProfile.linux": "bash",
         "yaml.schemas": {
-          "kubernetes": ["infra/helm/**/*.yaml", "infra/helm/**/*.yml"]
+          "kubernetes": [
+            "infra/helm/**/*.yaml",
+            "infra/helm/**/*.yml"
+          ]
         },
         "yaml.format.enable": true,
         "bicep.enableSurveys": false,
@@ -66,17 +67,36 @@
       }
     }
   },
-
-  "forwardPorts": [4444, 5432, 6379, 9090, 3000],
+  "forwardPorts": [
+    4444,
+    5432,
+    6379,
+    9090,
+    3000
+  ],
   "portsAttributes": {
-    "4444": { "label": "ContextForge Gateway", "onAutoForward": "notify" },
-    "5432": { "label": "PostgreSQL", "onAutoForward": "silent" },
-    "6379": { "label": "Redis", "onAutoForward": "silent" },
-    "9090": { "label": "Prometheus", "onAutoForward": "notify" },
-    "3000": { "label": "Grafana", "onAutoForward": "notify" }
+    "4444": {
+      "label": "ContextForge Gateway",
+      "onAutoForward": "notify"
+    },
+    "5432": {
+      "label": "PostgreSQL",
+      "onAutoForward": "silent"
+    },
+    "6379": {
+      "label": "Redis",
+      "onAutoForward": "silent"
+    },
+    "9090": {
+      "label": "Prometheus",
+      "onAutoForward": "notify"
+    },
+    "3000": {
+      "label": "Grafana",
+      "onAutoForward": "notify"
+    }
   },
-
   "remoteUser": "vscode",
   "mounts": [],
-  "runArgs": ["--network=host"]
+  "runArgs": []
 }
