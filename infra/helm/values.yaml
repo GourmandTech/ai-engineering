@@ -35,11 +35,29 @@ mcpContextForge:
   ingress:
     enabled: true
     className: nginx
+    # The chart hardcodes force-ssl-redirect=true on this ingress, which 308-
+    # redirects every request (including /health) to https://gateway.local even
+    # though TLS is off on minikube. These user annotations merge on top of the
+    # chart defaults and turn the redirect off for plain-HTTP local dev.
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "false"
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     host: gateway.local
     path: /
     pathType: Prefix
     tls:
       enabled: false                    # no cert-manager on Minikube
+
+  # ── Metrics / ServiceMonitor ───────────────────────────────────────────────
+  # In-app Prometheus metrics stay ON, but the ServiceMonitor CRD object is
+  # disabled. Minikube has no Prometheus Operator, so monitoring.coreos.com/v1
+  # is not a registered kind and Helm cannot render that resource ("no matches
+  # for kind ServiceMonitor"). Re-enable in the observability phase after
+  # installing kube-prometheus-stack (which provides the CRD).
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: false
 
   # ── Non-secret config overrides ────────────────────────────────────────────
   config:
@@ -106,7 +124,16 @@ mcpContextForge:
     REQUIRE_STRONG_SECRETS: "false"     # allow short dev secrets
 
 # ── Migration job ─────────────────────────────────────────────────────────────
+# Disabled for local single-replica minikube. The chart ships migrations as a
+# Helm *post-install* hook Job, which Helm only runs AFTER `--wait` finds the
+# gateway Deployment ready. But the gateway hard-fails on boot until the schema
+# is at head (MCPGATEWAY_SKIP_MIGRATIONS is forced true when migration.enabled),
+# so the Deployment never becomes ready, the hook never runs, and `helm install`
+# times out. With migration.enabled=false the chart sets SKIP_MIGRATIONS=false
+# and each gateway pod runs the advisory-lock migration itself on boot — the
+# chart documents this as safe for single-replica. Re-enable the dedicated Job
+# for multi-replica / AKS (values.azure.yaml), where Postgres is managed apart.
 migration:
-  enabled: true
+  enabled: false
   image:
     tag: "v1.0.4"                       # must match mcpContextForge.image.tag
