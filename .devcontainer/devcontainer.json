@@ -11,8 +11,9 @@
       "helm": "latest",
       "minikube": "latest"
     },
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
-      "dockerDashComposeVersion": "v2"
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "dockerDashComposeVersion": "v2",
+      "moby": true
     },
     "ghcr.io/devcontainers/features/node:1": {
       "version": "20"

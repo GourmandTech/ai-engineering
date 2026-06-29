@@ -16,14 +16,10 @@ HELM_VALUES      ?= infra/helm/values.yaml
 MINIKUBE_PROFILE ?= mcpgw
 AZ_LOCATION      ?= eastus
 
-# When running inside a devcontainer (DOOD), route to the gateway container
-# directly via Docker network instead of via host port mapping.
-IN_CONTAINER     := $(shell [ -f /.dockerenv ] && echo true || echo false)
-ifeq ($(IN_CONTAINER),true)
-  MCP_HOST       ?= gateway-1:4444
-else
-  MCP_HOST       ?= localhost:4444
-endif
+# With docker-in-docker, the Compose stack runs on this devcontainer's own daemon
+# and publishes ports to the devcontainer's localhost — so localhost works whether
+# or not we're inside the container.
+MCP_HOST         ?= localhost:4444
 
 # ─────────────────────────────────────────────────────────────
 # Help
@@ -37,10 +33,6 @@ help: ## Show this help
 # ─────────────────────────────────────────────────────────────
 up: ## Start ContextForge stack via Docker Compose
 	docker compose up -d
-	@# Connect devcontainer to compose network for direct container-to-container access
-	@if [ -f /.dockerenv ]; then \
-	  docker network connect ai-engineering_mcpnet $$(hostname) 2>/dev/null || true; \
-	fi
 	@echo "Waiting for gateway to be healthy..."
 	@for i in $$(seq 1 30); do \
 	  if curl -sf http://$(MCP_HOST)/health > /dev/null 2>&1; then \
@@ -73,32 +65,19 @@ chart-fetch: ## Clone ContextForge upstream repo (run once before helm-install)
 	fi
 
 minikube-start: ## Start Minikube cluster (profile: mcpgw) with ingress + ingress-dns
-	@# Step 1: Drop any leftover devcontainer connection to mcpgw from a previous run.
-	@# This ensures the devcontainer doesn't hold 172.19.0.2 (the IP minikube assigns kicbase).
-	@if [ -f /.dockerenv ]; then \
-	  docker network disconnect $(MINIKUBE_PROFILE) $$(hostname) 2>/dev/null || true; \
-	fi
-	@# Step 2: Background watcher — polls until kicbase is RUNNING (IP already assigned),
-	@# then joins the devcontainer to the network with a different IP.
-	@# Required so minikube can SSH to kicbase via container IP instead of 127.0.0.1.
-	@if [ -f /.dockerenv ]; then \
-	  ( while ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^$(MINIKUBE_PROFILE)$$"; do \
-	      sleep 1; \
-	    done; \
-	    docker network connect $(MINIKUBE_PROFILE) $$(hostname) 2>/dev/null && \
-	    echo "✓ Devcontainer joined $(MINIKUBE_PROFILE) network" || true ) & \
-	fi
+	@# Devcontainer runs docker-in-docker: the Docker daemon is local to this
+	@# container, so minikube's docker driver reaches the kicbase node over its
+	@# 127.0.0.1 forwarded ports natively — no network pre-create/attach needed.
 	minikube start \
 	  --profile $(MINIKUBE_PROFILE) \
 	  --driver docker \
-	  --network $(MINIKUBE_PROFILE) \
 	  --cpus 4 \
 	  --memory 6144 \
 	  --preload=false \
 	  --addons ingress,ingress-dns,metrics-server
 	kubectl config use-context $(MINIKUBE_PROFILE)
 	@echo "✓ Minikube ready. Context: $$(kubectl config current-context)"
-	@echo "  Run: echo \\"$$(minikube ip --profile $(MINIKUBE_PROFILE))  gateway.local\\" | sudo tee -a /etc/hosts"
+	@printf '  Next: add gateway.local to /etc/hosts:\n    echo "%s  gateway.local" | sudo tee -a /etc/hosts\n' "$$(minikube ip --profile $(MINIKUBE_PROFILE))"
 
 helm-install: ## Install ContextForge to Minikube (requires: make chart-fetch first)
 	@test -d "$(HELM_CHART)" || (echo "ERROR: Chart not found. Run: make chart-fetch" && exit 1)
@@ -126,8 +105,10 @@ helm-diff: ## Show diff between deployed and local chart (requires helm-diff plu
 helm-uninstall: ## Uninstall the Helm release from Minikube
 	helm uninstall $(HELM_RELEASE) -n $(NAMESPACE) --kube-context $(MINIKUBE_PROFILE)
 
-port-forward: ## Port-forward gateway to localhost:4444 (Minikube)
-	kubectl port-forward svc/$(HELM_RELEASE)-mcpcontextforge 4444:4444 \
+port-forward: ## Port-forward gateway to localhost:8080 (Minikube → host browser)
+	@echo "Gateway → http://localhost:8080   (admin UI: /admin · health: /health)"
+	@echo "VS Code forwards 8080 to your Mac; open it in the host browser."
+	kubectl port-forward svc/$(HELM_RELEASE)-mcpgateway 8080:80 \
 	  -n $(NAMESPACE) --context $(MINIKUBE_PROFILE)
 
 # ─────────────────────────────────────────────────────────────
