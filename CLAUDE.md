@@ -3,30 +3,46 @@
 ## Mission
 Personal SRE/DevOps learning platform. Goal: demonstrate self-advancement in AI-assisted engineering, agentic coding, and AI automation for job placement. Core background: Microsoft Azure, Azure DevOps, Bicep. Expanding into: AI/ML Ops, agentic infrastructure, federated MCP.
 
-## Current State (updated 2026-06-26)
+## Current State (updated 2026-06-29)
 
 ### Phase 1 — COMPLETE ✅
 - Docker Compose stack running locally at `http://localhost:4444/admin`
 - Confirmed healthy on MacBook Pro M1 (2026-06-26): `make test` returns `{"status":"healthy"}`
 - Key fix: `MCPGATEWAY_UI_ENABLED: "true"` and `MCPGATEWAY_ADMIN_API_ENABLED: "true"` required in env (default is False in latest image)
-- Devcontainer: `mcr.microsoft.com/devcontainers/python:3.12-bookworm` base, `docker-outside-of-docker` feature
-- NOTE: `--network=host` was removed from devcontainer runArgs — on Mac Docker Desktop it blocks SSH to sibling containers. Docker Compose access uses container name routing (`gateway-1:4444`).
-- NOTE: Minikube networking — do NOT pass `--network mcpgw` to `minikube start` (causes IP conflict during kicbase creation on Mac). `make minikube-start` lets minikube manage its own Docker network, then connects the devcontainer post-startup.
+- Devcontainer: `mcr.microsoft.com/devcontainers/python:3.12-bookworm` base, **`docker-in-docker` feature** (switched from `docker-outside-of-docker` on 2026-06-29 — see Minikube note).
+- NOTE: With `docker-in-docker` the Compose stack runs on the devcontainer's own daemon and publishes to the devcontainer's localhost, so `MCP_HOST=localhost:4444` works directly (the old `gateway-1:4444` container-routing hack is gone).
 
-### Phase 2 — IN PROGRESS 🔄
-Continuing on MacBook Pro M1. Chart fetched (`make chart-fetch`), image confirmed arm64-native at `v1.0.4`.
+### Minikube on M1 + devcontainer — root cause & fix (2026-06-29)
+- **Symptom:** `make minikube-start` failed with `DRV_CREATE_TIMEOUT` — minikube created the kicbase node, then powered it off and retried until timeout.
+- **Root cause:** minikube's docker driver on Docker Desktop always SSHes to the node via the **host's `127.0.0.1:<forwarded-port>`** (libmachine log: `dial tcp 127.0.0.1:54525: connect: connection refused`). Under `docker-outside-of-docker`, the devcontainer shares the host daemon but `127.0.0.1` is the devcontainer's own loopback, not the Mac host where that port is published — so SSH never connects. Pre-creating the docker network and attaching the devcontainer made `192.168.49.2:22` reachable, but minikube never dials the container IP, so it couldn't fix this.
+- **Fix:** switched the devcontainer to `docker-in-docker`. The Docker daemon is now local to the devcontainer, so kicbase's forwarded ports land on the devcontainer's own `127.0.0.1` and minikube works natively — no `--network`, no pre-create, no attach hacks. `make minikube-start` is back to a plain `minikube start`.
+- Confirmed during debugging: container-to-container traffic on the bridge was fine (`192.168.49.2:22` reachable), and the host's forwarded port was reachable via `host.docker.internal` — the only broken path was minikube's hardcoded `127.0.0.1`.
 
-**Next steps to resume:**
+### Phase 2 — COMPLETE ✅
+Full Helm stack deployed to minikube (profile `mcpgw`) on MacBook Pro M1. Confirmed 2026-06-29: `make helm-install` → all pods `1/1 Running`, gateway healthy over ingress (`curl http://gateway.local/health` from inside the devcontainer returns `{"status":"healthy"}`).
+
+**Working flow:**
 1. `make chart-fetch` — clones IBM/mcp-context-forge to `.contextforge/` (run once)
-2. Add to `/etc/hosts`: `$(minikube ip --profile mcpgw)  gateway.local`
-3. `minikube image load ghcr.io/ibm/mcp-context-forge:v1.0.4 --profile mcpgw` — pre-pull image
+2. `make minikube-start` — plain `minikube start` under DinD (see Minikube note above)
+3. `minikube image load ghcr.io/ibm/mcp-context-forge:v1.0.4 --profile mcpgw` — pre-load arm64 image
 4. `make helm-install` — deploys chart with `infra/helm/values.yaml` overrides
-5. Verify: `curl http://gateway.local/health` and admin UI at `http://gateway.local/admin`
+5. Verify (inside devcontainer): `echo "192.168.49.2  gateway.local" | sudo tee -a /etc/hosts` then `curl http://gateway.local/health`
+6. Host browser: `make port-forward` → open `http://localhost:8080/admin` on the Mac. `gateway.local` does NOT work from the host (cluster is nested in DinD — see Host access below).
+
+**Phase 2 Helm override fixes** (full write-up: `docs/runbooks/helm-install-minikube.md`):
+- `mcpContextForge.metrics.serviceMonitor.enabled: false` — minikube has no Prometheus Operator, so the chart's `ServiceMonitor` (`monitoring.coreos.com/v1`) is an unregistered kind and Helm can't render it.
+- `migration.enabled: false` — the chart's migration Job is a Helm `post-install` hook that **deadlocks** against `--wait` (the gateway can't be Ready until the schema is migrated, but the hook only runs after Ready). With it off, the gateway self-migrates on boot (`MCPGATEWAY_SKIP_MIGRATIONS=false`), safe for single-replica. Re-enable for AKS.
+- `mcpContextForge.ingress.annotations` → `ssl-redirect`/`force-ssl-redirect: "false"` — the chart hardcodes a forced HTTPS 308 even with TLS off, which 308s every request (incl. `/health`) to a dead `https://` scheme.
+
+**Host access under DinD:** the minikube node IP (`192.168.49.2`) and `gateway.local` resolve/route only *inside* the devcontainer. From the Mac host browser, `gateway.local` fails with `DNS_PROBE_FINISHED_NXDOMAIN` — use `make port-forward` (gateway → `localhost:8080`, VS Code forwards to the host). See `docs/runbooks/minikube-devcontainer-dind.md`.
 
 **M1/arm64 note:** ContextForge image (`ghcr.io/ibm/mcp-context-forge`) must support `linux/arm64`. Check with `docker manifest inspect ghcr.io/ibm/mcp-context-forge:v1.0.4` before pulling. If arm64 is missing, use `--platform linux/amd64` (Rosetta) in docker-compose.yml and Helm values extraEnv.
 
 **Helm chart location:** `.contextforge/charts/mcp-stack` (upstream, not committed — listed in .gitignore)
-**Our overrides:** `infra/helm/values.yaml` — 1 replica, pinned tag `v1.0.4`, ingress on `gateway.local`, TLS off, admin UI via extraEnv
+**Our overrides:** `infra/helm/values.yaml` — 1 replica, pinned tag `v1.0.4`, ingress on `gateway.local`, TLS off, admin UI via extraEnv, ServiceMonitor off, migration off (self-migrate), ssl-redirect off.
+
+### Phase 3 — NEXT ⬜ (AKS)
+Deploy to Azure with Bicep IaC. Re-enable the migration Job and `ServiceMonitor` where the platform provides a Prometheus Operator and externally-managed Postgres; restore TLS/HTTPS at the ingress. AKS overrides live in `infra/helm/values.azure.yaml`.
 
 ---
 
@@ -106,7 +122,7 @@ Deploying IBM ContextForge — an open-source AI Gateway that federates MCP serv
 | Phase | Focus | Status |
 |---|---|---|
 | 1 | Local Docker Compose — understand ContextForge fundamentals | ✅ |
-| 2 | Minikube — deploy full Helm stack, learn k8s primitives | 🔄 |
+| 2 | Minikube — deploy full Helm stack, learn k8s primitives | ✅ |
 | 3 | AKS — deploy to Azure with Bicep IaC, production-grade config | ⬜ |
 | 4 | Federated MCP — register multiple MCP servers, RBAC + OAuth | ⬜ |
 | 5 | Agent automation — A2A protocol, multi-agent orchestration | ⬜ |
