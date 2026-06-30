@@ -1,0 +1,182 @@
+# ContextForge Helm values — AKS (Phase 3)
+#
+# Layered on top of infra/helm/values.yaml (minikube base) via:
+#   helm upgrade --install mcp-stack .contextforge/charts/mcp-stack \
+#     --namespace mcp --create-namespace \
+#     --values infra/helm/values.yaml \
+#     --values infra/helm/values.azure.yaml
+#
+# Secrets: NOT stored here. Populated at deploy time from Azure Key Vault:
+#   - CSI SecretProviderClass (infra/k8s/secret-provider-class.yaml) syncs
+#     KV secrets → the k8s Secret that this chart's `secret:` block normally creates.
+#   - OR: pass via --set at Helm install time (see Makefile helm-aks-secrets target).
+#   Either way, never commit real secret values.
+
+mcpContextForge:
+
+  # ── Replicas & scaling ─────────────────────────────────────────────────────
+  replicaCount: 1                        # 1 replica — single node; Recreate strategy avoids rolling-update deadlock
+  strategy:
+    type: Recreate                       # RollingUpdate needs headroom for +1 pod; we don't have it on 1 node
+
+  hpa:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 70
+
+  # ── Image ──────────────────────────────────────────────────────────────────
+  image:
+    repository: ghcr.io/ibm/mcp-context-forge
+    tag: "v1.0.4"                        # pinned — never 'latest' on AKS
+    pullPolicy: IfNotPresent
+
+  # ── Resource limits ────────────────────────────────────────────────────────
+  # Production-grade: 2 workers @ 500m each; memory headroom for in-flight requests
+  resources:
+    requests:
+      cpu: 200m                          # ~239m free on node after postgres+redis; 200m fits with ~39m buffer
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+  # ── Ingress ────────────────────────────────────────────────────────────────
+  # cert-manager issues a Let's Encrypt certificate automatically via HTTP-01 challenge.
+  # Prerequisites (run once):
+  #   helm upgrade --install cert-manager jetstack/cert-manager \
+  #     --namespace cert-manager --create-namespace --set installCRDs=true --wait
+  #   kubectl apply -f infra/k8s/cluster-issuer.yaml
+  #
+  # DNS: contextforge.gourmandtech.com A → 20.72.157.30 (Cloudflare, DNS-only / gray cloud)
+  ingress:
+    enabled: true
+    className: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/limit-rps: "50"
+    host: contextforge.gourmandtech.com
+    path: /
+    pathType: Prefix
+    tls:
+      enabled: true
+      secretName: contextforge-tls                # cert-manager stores the cert here
+
+  # ── Metrics / ServiceMonitor ───────────────────────────────────────────────
+  # AKS + kube-prometheus-stack provides the Prometheus Operator CRD.
+  # Install first: helm install kube-prom prometheus-community/kube-prometheus-stack -n monitoring
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: false   # requires kube-prometheus-stack CRDs — install separately, then re-enable
+
+  # ── Non-secret config overrides ────────────────────────────────────────────
+  config:
+    HTTP_SERVER: "gunicorn"
+    GUNICORN_WORKERS: "2"                # 2 workers for 1-CPU limit (1 worker per core)
+
+    ENVIRONMENT: production
+    APP_DOMAIN: "https://contextforge.gourmandtech.com"
+    ALLOWED_ORIGINS: '["https://contextforge.gourmandtech.com"]'
+
+    SSRF_ALLOW_LOCALHOST: "false"
+    SSRF_ALLOW_PRIVATE_NETWORKS: "false"
+    SSRF_DNS_FAIL_CLOSED: "false"
+
+    # TLS + custom domain — production security headers enabled
+    HSTS_ENABLED: "true"
+    SECURE_COOKIES: "true"
+    COOKIE_SAMESITE: "strict"
+
+    # Enforce strong secrets and password policy
+    PASSWORD_CHANGE_ENFORCEMENT_ENABLED: "true"
+    ADMIN_REQUIRE_PASSWORD_CHANGE_ON_BOOTSTRAP: "true"
+    DETECT_DEFAULT_PASSWORD_ON_LOGIN: "true"
+    REQUIRE_PASSWORD_CHANGE_FOR_DEFAULT_PASSWORD: "true"
+
+    # Basic auth disabled — using JWT + email auth instead
+    API_ALLOW_BASIC_AUTH: "false"
+
+    LOG_LEVEL: INFO
+    LOG_FORMAT: json
+    DISABLE_ACCESS_LOG: "false"
+    ENABLE_METRICS: "true"
+    MIN_SECRET_LENGTH: "32"
+    REQUIRE_STRONG_SECRETS: "true"
+
+  # ── Admin UI ────────────────────────────────────────────────────────────────
+  extraEnv:
+    - name: MCPGATEWAY_UI_ENABLED
+      value: "true"
+    - name: MCPGATEWAY_ADMIN_API_ENABLED
+      value: "true"
+
+  # ── Secrets ────────────────────────────────────────────────────────────────
+  # Values here are INTENTIONALLY EMPTY placeholders.
+  #
+  # At deploy time, supply secrets via one of two methods:
+  #
+  # Method A — CSI sync (preferred):
+  #   1. Populate Key Vault (see runbook: docs/runbooks/aks-deploy.md)
+  #   2. Apply: kubectl apply -f infra/k8s/secret-provider-class.yaml
+  #   3. The SecretProviderClass syncs KV secrets → the k8s Secret created below
+  #      by this chart (the chart won't overwrite an existing Secret).
+  #
+  # Method B — --set at Helm install (simpler for CI):
+  #   KV_NAME=kv-contextforge-dev
+  #   helm upgrade --install ... \
+  #     --set "mcpContextForge.secret.JWT_SECRET_KEY=$(az keyvault secret show \
+  #       --vault-name $KV_NAME --name jwt-secret-key --query value -o tsv)" \
+  #     --set "mcpContextForge.secret.AUTH_ENCRYPTION_SECRET=$(az keyvault secret show \
+  #       --vault-name $KV_NAME --name auth-encryption-secret --query value -o tsv)"
+  #     # ... etc for each secret
+  secret:
+    JWT_SECRET_KEY: ""
+    AUTH_ENCRYPTION_SECRET: ""
+    PLATFORM_ADMIN_EMAIL: ""
+    PLATFORM_ADMIN_PASSWORD: ""
+    PLATFORM_ADMIN_FULL_NAME: "Platform Administrator"
+    DEFAULT_USER_PASSWORD: ""
+    EMAIL_AUTH_ENABLED: "true"
+    AUTH_REQUIRED: "true"
+    MCP_REQUIRE_AUTH: "true"
+    MIN_SECRET_LENGTH: "32"
+    REQUIRE_STRONG_SECRETS: "true"
+
+# ── Fast-time-server ──────────────────────────────────────────────────────────
+# Disabled on single-node dev cluster — frees CPU for gateway and postgres.
+# Re-enable when running 2+ nodes.
+mcpFastTimeServer:
+  enabled: false
+
+# ── Postgres ──────────────────────────────────────────────────────────────────
+# Chart default is 500m request — reduced for single D2s_v7 node.
+postgres:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# ── Redis ─────────────────────────────────────────────────────────────────────
+# Chart default is 250m request — reduced for single D2s_v7 node.
+redis:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+# ── Migration Job ──────────────────────────────────────────────────────────────
+# Disabled on single D2s_v7 node: the migration Job requests 250m CPU and can't
+# schedule alongside gateway (200m) + postgres (100m) + redis (50m) + system overhead.
+# The gateway self-migrates on boot via MCPGATEWAY_SKIP_MIGRATIONS=false (default).
+# Safe for single-replica. Re-enable when running 2+ nodes or larger VM SKU.
+migration:
+  enabled: false

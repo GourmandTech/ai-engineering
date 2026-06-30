@@ -1,0 +1,898 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.44.1.10279",
+      "templateHash": "1402252484057619551"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "eastus",
+      "metadata": {
+        "description": "Azure region for all resources"
+      }
+    },
+    "environment": {
+      "type": "string",
+      "defaultValue": "dev",
+      "allowedValues": [
+        "dev",
+        "staging",
+        "prod"
+      ],
+      "metadata": {
+        "description": "Environment tag (dev | staging | prod)"
+      }
+    },
+    "project": {
+      "type": "string",
+      "defaultValue": "contextforge",
+      "metadata": {
+        "description": "Project name — used in all resource names"
+      }
+    },
+    "ownerAlias": {
+      "type": "string",
+      "defaultValue": "dfernandez",
+      "metadata": {
+        "description": "Owner alias — tagged on every resource"
+      }
+    },
+    "adminObjectId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Object ID of your Azure AD user or service principal — grants Key Vault Secrets Officer so you can populate secrets after deploy. Leave empty to skip."
+      }
+    },
+    "kubernetesVersion": {
+      "type": "string",
+      "defaultValue": "1.35",
+      "metadata": {
+        "description": "Kubernetes version to pin. Run: az aks get-versions -l eastus -o table"
+      }
+    },
+    "nodeVmSize": {
+      "type": "string",
+      "defaultValue": "Standard_D2s_v7",
+      "metadata": {
+        "description": "System node pool VM size"
+      }
+    },
+    "nodeCount": {
+      "type": "int",
+      "defaultValue": 1,
+      "minValue": 1,
+      "maxValue": 5,
+      "metadata": {
+        "description": "System node pool initial count"
+      }
+    },
+    "maxPodsPerNode": {
+      "type": "int",
+      "defaultValue": 50,
+      "minValue": 10,
+      "maxValue": 250,
+      "metadata": {
+        "description": "Maximum pods per node. Increase from Azure CNI default of 30 when running observability add-ons."
+      }
+    }
+  },
+  "variables": {
+    "resourceGroupName": "[format('rg-{0}-{1}', parameters('project'), parameters('environment'))]",
+    "vnetName": "[format('vnet-{0}-{1}', parameters('project'), parameters('environment'))]",
+    "aksClusterName": "[format('aks-{0}-{1}', parameters('project'), parameters('environment'))]",
+    "acrName": "[format('acr{0}{1}', replace(parameters('project'), '-', ''), parameters('environment'))]",
+    "keyVaultName": "[format('kv-{0}-{1}', parameters('project'), parameters('environment'))]",
+    "logWorkspaceName": "[format('log-{0}-{1}', parameters('project'), parameters('environment'))]",
+    "commonTags": {
+      "environment": "[parameters('environment')]",
+      "project": "[parameters('project')]",
+      "owner": "[parameters('ownerAlias')]",
+      "managedBy": "bicep"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Resources/resourceGroups",
+      "apiVersion": "2022-09-01",
+      "name": "[variables('resourceGroupName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('commonTags')]"
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "deploy-logworkspace",
+      "resourceGroup": "[variables('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "name": {
+            "value": "[variables('logWorkspaceName')]"
+          },
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "tags": {
+            "value": "[variables('commonTags')]"
+          },
+          "retentionInDays": {
+            "value": 30
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.44.1.10279",
+              "templateHash": "1949204392723075891"
+            }
+          },
+          "parameters": {
+            "name": {
+              "type": "string",
+              "metadata": {
+                "description": "Log Analytics workspace name"
+              }
+            },
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure region for the workspace"
+              }
+            },
+            "tags": {
+              "type": "object",
+              "metadata": {
+                "description": "Resource tags"
+              }
+            },
+            "retentionInDays": {
+              "type": "int",
+              "defaultValue": 30,
+              "metadata": {
+                "description": "Retention period in days (30–730)"
+              }
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.OperationalInsights/workspaces",
+              "apiVersion": "2022-10-01",
+              "name": "[parameters('name')]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "sku": {
+                  "name": "PerGB2018"
+                },
+                "retentionInDays": "[parameters('retentionInDays')]",
+                "features": {
+                  "enableLogAccessUsingOnlyResourcePermissions": true
+                }
+              }
+            }
+          ],
+          "outputs": {
+            "workspaceId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('name'))]"
+            },
+            "workspaceName": {
+              "type": "string",
+              "value": "[parameters('name')]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('resourceGroupName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "deploy-network",
+      "resourceGroup": "[variables('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "vnetName": {
+            "value": "[variables('vnetName')]"
+          },
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "tags": {
+            "value": "[variables('commonTags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.44.1.10279",
+              "templateHash": "6765214879240757768"
+            }
+          },
+          "parameters": {
+            "vnetName": {
+              "type": "string",
+              "metadata": {
+                "description": "Virtual network name"
+              }
+            },
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure region"
+              }
+            },
+            "tags": {
+              "type": "object",
+              "metadata": {
+                "description": "Resource tags"
+              }
+            },
+            "vnetAddressPrefix": {
+              "type": "string",
+              "defaultValue": "10.0.0.0/16",
+              "metadata": {
+                "description": "VNet address space"
+              }
+            },
+            "aksSubnetPrefix": {
+              "type": "string",
+              "defaultValue": "10.0.0.0/22",
+              "metadata": {
+                "description": "AKS node subnet address prefix — must be large enough for node IPs with Azure CNI (/22 = ~1000 IPs)"
+              }
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Network/virtualNetworks",
+              "apiVersion": "2023-05-01",
+              "name": "[parameters('vnetName')]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "addressSpace": {
+                  "addressPrefixes": [
+                    "[parameters('vnetAddressPrefix')]"
+                  ]
+                },
+                "subnets": [
+                  {
+                    "name": "snet-aks",
+                    "properties": {
+                      "addressPrefix": "[parameters('aksSubnetPrefix')]",
+                      "privateEndpointNetworkPolicies": "Disabled"
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "outputs": {
+            "vnetId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName'))]"
+            },
+            "vnetName": {
+              "type": "string",
+              "value": "[parameters('vnetName')]"
+            },
+            "aksSubnetId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName')), '2023-05-01').subnets[0].id]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('resourceGroupName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "deploy-acr",
+      "resourceGroup": "[variables('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "acrName": {
+            "value": "[variables('acrName')]"
+          },
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "tags": {
+            "value": "[variables('commonTags')]"
+          },
+          "sku": {
+            "value": "Standard"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.44.1.10279",
+              "templateHash": "2846659153797019849"
+            }
+          },
+          "parameters": {
+            "acrName": {
+              "type": "string",
+              "metadata": {
+                "description": "Container Registry name — must be globally unique, alphanumeric, 5–50 chars"
+              }
+            },
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure region"
+              }
+            },
+            "tags": {
+              "type": "object",
+              "metadata": {
+                "description": "Resource tags"
+              }
+            },
+            "sku": {
+              "type": "string",
+              "defaultValue": "Standard",
+              "allowedValues": [
+                "Basic",
+                "Standard",
+                "Premium"
+              ],
+              "metadata": {
+                "description": "SKU for the registry (Basic | Standard | Premium)"
+              }
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.ContainerRegistry/registries",
+              "apiVersion": "2023-07-01",
+              "name": "[parameters('acrName')]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "sku": {
+                "name": "[parameters('sku')]"
+              },
+              "properties": {
+                "adminUserEnabled": false,
+                "publicNetworkAccess": "Enabled",
+                "zoneRedundancy": "Disabled"
+              }
+            }
+          ],
+          "outputs": {
+            "acrId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName'))]"
+            },
+            "loginServer": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), '2023-07-01').loginServer]"
+            },
+            "acrName": {
+              "type": "string",
+              "value": "[parameters('acrName')]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('resourceGroupName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "deploy-keyvault",
+      "resourceGroup": "[variables('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "keyVaultName": {
+            "value": "[variables('keyVaultName')]"
+          },
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "tags": {
+            "value": "[variables('commonTags')]"
+          },
+          "adminObjectId": {
+            "value": "[parameters('adminObjectId')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.44.1.10279",
+              "templateHash": "2386609736023091839"
+            }
+          },
+          "parameters": {
+            "keyVaultName": {
+              "type": "string",
+              "metadata": {
+                "description": "Key Vault name — 3–24 chars, alphanumeric + hyphens, globally unique"
+              }
+            },
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure region"
+              }
+            },
+            "tags": {
+              "type": "object",
+              "metadata": {
+                "description": "Resource tags"
+              }
+            },
+            "adminObjectId": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Object ID of the identity that will administer the vault (e.g., your own user or a pipeline service principal)"
+              }
+            }
+          },
+          "variables": {
+            "secretsOfficerRoleId": "b86a8fe4-44ce-4948-aee5-eccb2c155cd7"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.KeyVault/vaults",
+              "apiVersion": "2023-07-01",
+              "name": "[parameters('keyVaultName')]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "sku": {
+                  "family": "A",
+                  "name": "standard"
+                },
+                "tenantId": "[subscription().tenantId]",
+                "enableRbacAuthorization": true,
+                "enableSoftDelete": true,
+                "softDeleteRetentionInDays": 7,
+                "publicNetworkAccess": "Enabled",
+                "networkAcls": {
+                  "defaultAction": "Allow",
+                  "bypass": "AzureServices",
+                  "ipRules": [],
+                  "virtualNetworkRules": []
+                }
+              }
+            },
+            {
+              "condition": "[not(empty(parameters('adminObjectId')))]",
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+              "name": "[guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), parameters('adminObjectId'), variables('secretsOfficerRoleId'))]",
+              "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('secretsOfficerRoleId'))]",
+                "principalId": "[parameters('adminObjectId')]",
+                "principalType": "User"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "keyVaultId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+            },
+            "keyVaultName": {
+              "type": "string",
+              "value": "[parameters('keyVaultName')]"
+            },
+            "keyVaultUri": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('resourceGroupName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "deploy-aks",
+      "resourceGroup": "[variables('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "clusterName": {
+            "value": "[variables('aksClusterName')]"
+          },
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "tags": {
+            "value": "[variables('commonTags')]"
+          },
+          "aksSubnetId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-network'), '2025-04-01').outputs.aksSubnetId.value]"
+          },
+          "logAnalyticsWorkspaceId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-logworkspace'), '2025-04-01').outputs.workspaceId.value]"
+          },
+          "acrId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-acr'), '2025-04-01').outputs.acrId.value]"
+          },
+          "keyVaultId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-keyvault'), '2025-04-01').outputs.keyVaultId.value]"
+          },
+          "adminObjectId": {
+            "value": "[parameters('adminObjectId')]"
+          },
+          "kubernetesVersion": {
+            "value": "[parameters('kubernetesVersion')]"
+          },
+          "nodeVmSize": {
+            "value": "[parameters('nodeVmSize')]"
+          },
+          "nodeCount": {
+            "value": "[parameters('nodeCount')]"
+          },
+          "maxPodsPerNode": {
+            "value": "[parameters('maxPodsPerNode')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.44.1.10279",
+              "templateHash": "4793843811383138854"
+            }
+          },
+          "parameters": {
+            "clusterName": {
+              "type": "string",
+              "metadata": {
+                "description": "AKS cluster name"
+              }
+            },
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure region"
+              }
+            },
+            "tags": {
+              "type": "object",
+              "metadata": {
+                "description": "Resource tags"
+              }
+            },
+            "aksSubnetId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the AKS node subnet"
+              }
+            },
+            "logAnalyticsWorkspaceId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the Log Analytics workspace for Container Insights"
+              }
+            },
+            "acrId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the Azure Container Registry to attach"
+              }
+            },
+            "keyVaultId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the Key Vault"
+              }
+            },
+            "adminObjectId": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Object ID of the admin user/service principal to grant AKS RBAC Cluster Admin. Leave empty to skip."
+              }
+            },
+            "nodeVmSize": {
+              "type": "string",
+              "defaultValue": "Standard_D2s_v7",
+              "metadata": {
+                "description": "System node pool VM size"
+              }
+            },
+            "nodeCount": {
+              "type": "int",
+              "defaultValue": 1,
+              "minValue": 1,
+              "maxValue": 5,
+              "metadata": {
+                "description": "Initial system node count"
+              }
+            },
+            "osDiskSizeGB": {
+              "type": "int",
+              "defaultValue": 50,
+              "metadata": {
+                "description": "OS disk size in GB (0 = use managed default)"
+              }
+            },
+            "maxPodsPerNode": {
+              "type": "int",
+              "defaultValue": 50,
+              "minValue": 10,
+              "maxValue": 250,
+              "metadata": {
+                "description": "Maximum pods per node. Azure CNI default is 30 — increase for observability add-ons (cert-manager, prometheus, etc.)"
+              }
+            },
+            "kubernetesVersion": {
+              "type": "string",
+              "defaultValue": "1.35",
+              "metadata": {
+                "description": "Kubernetes version — check: az aks get-versions -l eastus -o table"
+              }
+            }
+          },
+          "variables": {
+            "acrPullRoleId": "7f951dda-4ed3-4680-a7ca-43fe172d538d",
+            "kvSecretsUserRoleId": "4633458b-17de-408a-b874-0445c86b69e6",
+            "aksRbacClusterAdminRoleId": "b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.ContainerService/managedClusters",
+              "apiVersion": "2024-01-01",
+              "name": "[parameters('clusterName')]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "identity": {
+                "type": "SystemAssigned"
+              },
+              "properties": {
+                "kubernetesVersion": "[parameters('kubernetesVersion')]",
+                "dnsPrefix": "[parameters('clusterName')]",
+                "agentPoolProfiles": [
+                  {
+                    "name": "system",
+                    "mode": "System",
+                    "count": "[parameters('nodeCount')]",
+                    "vmSize": "[parameters('nodeVmSize')]",
+                    "osDiskSizeGB": "[parameters('osDiskSizeGB')]",
+                    "osDiskType": "Managed",
+                    "osType": "Linux",
+                    "osSKU": "AzureLinux",
+                    "vnetSubnetID": "[parameters('aksSubnetId')]",
+                    "maxPods": "[parameters('maxPodsPerNode')]",
+                    "enableAutoScaling": false,
+                    "type": "VirtualMachineScaleSets",
+                    "upgradeSettings": {
+                      "maxSurge": "1"
+                    }
+                  }
+                ],
+                "networkProfile": {
+                  "networkPlugin": "azure",
+                  "networkPolicy": "calico",
+                  "loadBalancerSku": "standard",
+                  "serviceCidr": "10.1.0.0/16",
+                  "dnsServiceIP": "10.1.0.10"
+                },
+                "addonProfiles": {
+                  "omsagent": {
+                    "enabled": true,
+                    "config": {
+                      "logAnalyticsWorkspaceResourceID": "[parameters('logAnalyticsWorkspaceId')]"
+                    }
+                  },
+                  "azureKeyvaultSecretsProvider": {
+                    "enabled": true,
+                    "config": {
+                      "enableSecretRotation": "true",
+                      "rotationPollInterval": "2m"
+                    }
+                  }
+                },
+                "oidcIssuerProfile": {
+                  "enabled": true
+                },
+                "securityProfile": {
+                  "workloadIdentity": {
+                    "enabled": true
+                  }
+                },
+                "enableRBAC": true,
+                "aadProfile": {
+                  "managed": true,
+                  "enableAzureRBAC": true
+                },
+                "autoUpgradeProfile": {
+                  "upgradeChannel": "patch"
+                }
+              }
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "name": "[guid(parameters('acrId'), parameters('clusterName'), variables('acrPullRoleId'))]",
+              "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('acrPullRoleId'))]",
+                "principalId": "[reference(resourceId('Microsoft.ContainerService/managedClusters', parameters('clusterName')), '2024-01-01').identityProfile.kubeletidentity.objectId]",
+                "principalType": "ServicePrincipal"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ContainerService/managedClusters', parameters('clusterName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "name": "[guid(parameters('keyVaultId'), parameters('clusterName'), variables('kvSecretsUserRoleId'))]",
+              "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('kvSecretsUserRoleId'))]",
+                "principalId": "[reference(resourceId('Microsoft.ContainerService/managedClusters', parameters('clusterName')), '2024-01-01').addonProfiles.azureKeyvaultSecretsProvider.identity.objectId]",
+                "principalType": "ServicePrincipal"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ContainerService/managedClusters', parameters('clusterName'))]"
+              ]
+            },
+            {
+              "condition": "[not(empty(parameters('adminObjectId')))]",
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.ContainerService/managedClusters', parameters('clusterName'))]",
+              "name": "[guid(resourceId('Microsoft.ContainerService/managedClusters', parameters('clusterName')), parameters('adminObjectId'), variables('aksRbacClusterAdminRoleId'))]",
+              "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('aksRbacClusterAdminRoleId'))]",
+                "principalId": "[parameters('adminObjectId')]",
+                "principalType": "User"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ContainerService/managedClusters', parameters('clusterName'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "clusterName": {
+              "type": "string",
+              "value": "[parameters('clusterName')]"
+            },
+            "clusterId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.ContainerService/managedClusters', parameters('clusterName'))]"
+            },
+            "kubeletIdentityObjectId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.ContainerService/managedClusters', parameters('clusterName')), '2024-01-01').identityProfile.kubeletidentity.objectId]"
+            },
+            "csiDriverIdentityObjectId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.ContainerService/managedClusters', parameters('clusterName')), '2024-01-01').addonProfiles.azureKeyvaultSecretsProvider.identity.objectId]"
+            },
+            "oidcIssuerUrl": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.ContainerService/managedClusters', parameters('clusterName')), '2024-01-01').oidcIssuerProfile.issuerURL]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-acr')]",
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-keyvault')]",
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-logworkspace')]",
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-network')]",
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('resourceGroupName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "resourceGroupName": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource group that contains all ContextForge resources"
+      },
+      "value": "[variables('resourceGroupName')]"
+    },
+    "aksClusterName": {
+      "type": "string",
+      "metadata": {
+        "description": "AKS cluster name — pass to: az aks get-credentials -g <rg> -n <cluster>"
+      },
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-aks'), '2025-04-01').outputs.clusterName.value]"
+    },
+    "acrLoginServer": {
+      "type": "string",
+      "metadata": {
+        "description": "ACR login server — used in image pull and Helm values"
+      },
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-acr'), '2025-04-01').outputs.loginServer.value]"
+    },
+    "acrName": {
+      "type": "string",
+      "metadata": {
+        "description": "ACR name"
+      },
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-acr'), '2025-04-01').outputs.acrName.value]"
+    },
+    "keyVaultName": {
+      "type": "string",
+      "metadata": {
+        "description": "Key Vault name — populate secrets here before running helm-aks"
+      },
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-keyvault'), '2025-04-01').outputs.keyVaultName.value]"
+    },
+    "keyVaultUri": {
+      "type": "string",
+      "metadata": {
+        "description": "Key Vault URI"
+      },
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-keyvault'), '2025-04-01').outputs.keyVaultUri.value]"
+    },
+    "oidcIssuerUrl": {
+      "type": "string",
+      "metadata": {
+        "description": "OIDC issuer URL — needed for workload identity federation"
+      },
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-aks'), '2025-04-01').outputs.oidcIssuerUrl.value]"
+    },
+    "csiDriverIdentityObjectId": {
+      "type": "string",
+      "metadata": {
+        "description": "CSI driver managed identity object ID — already granted Key Vault Secrets User"
+      },
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-aks'), '2025-04-01').outputs.csiDriverIdentityObjectId.value]"
+    }
+  }
+}
