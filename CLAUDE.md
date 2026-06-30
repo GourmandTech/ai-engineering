@@ -3,7 +3,7 @@
 ## Mission
 Personal SRE/DevOps learning platform. Goal: demonstrate self-advancement in AI-assisted engineering, agentic coding, and AI automation for job placement. Core background: Microsoft Azure, Azure DevOps, Bicep. Expanding into: AI/ML Ops, agentic infrastructure, federated MCP.
 
-## Current State (updated 2026-06-29)
+## Current State (updated 2026-06-30)
 
 ### Phase 1 — COMPLETE ✅
 - Docker Compose stack running locally at `http://localhost:4444/admin`
@@ -41,8 +41,43 @@ Full Helm stack deployed to minikube (profile `mcpgw`) on MacBook Pro M1. Confir
 **Helm chart location:** `.contextforge/charts/mcp-stack` (upstream, not committed — listed in .gitignore)
 **Our overrides:** `infra/helm/values.yaml` — 1 replica, pinned tag `v1.0.4`, ingress on `gateway.local`, TLS off, admin UI via extraEnv, ServiceMonitor off, migration off (self-migrate), ssl-redirect off.
 
-### Phase 3 — NEXT ⬜ (AKS)
-Deploy to Azure with Bicep IaC. Re-enable the migration Job and `ServiceMonitor` where the platform provides a Prometheus Operator and externally-managed Postgres; restore TLS/HTTPS at the ingress. AKS overrides live in `infra/helm/values.azure.yaml`.
+### Phase 3 — COMPLETE ✅ (AKS)
+Confirmed 2026-06-30: `curl https://contextforge.gourmandtech.com/health` → `{"status":"healthy"}` with valid Let's Encrypt TLS, TLSv1.3, HTTP/2, HSTS, and production security headers.
+
+**Production URL:** `https://contextforge.gourmandtech.com`
+
+**IaC files:**
+- `infra/bicep/main.bicep` — subscription-scoped deployment, derives all resource names from params
+- `infra/bicep/main.bicepparam` — 1 node, Standard_D2s_v7, eastus, maxPods=50, adminObjectId set
+- `infra/bicep/modules/network.bicep` — VNet 10.0.0.0/16, AKS subnet 10.0.0.0/22
+- `infra/bicep/modules/acr.bicep` — Standard ACR, admin disabled, managed identity pull
+- `infra/bicep/modules/keyvault.bicep` — Standard KV, RBAC auth, soft-delete 7 days
+- `infra/bicep/modules/aks.bicep` — AKS with CSI add-on, OIDC issuer, workload identity, Container Insights, AcrPull role, KV Secrets User role, maxPodsPerNode param
+- `infra/bicep/modules/logworkspace.bicep` — PerGB2018, 30-day retention
+
+**Helm / App files:**
+- `infra/helm/values.azure.yaml` — 1 replica, Recreate strategy, HPA, TLS on `contextforge.gourmandtech.com`, cert-manager HTTP-01, strong security config, migration off (self-migrate)
+- `infra/k8s/secret-provider-class.yaml` — CSI SecretProviderClass syncs KV → k8s Secret
+- `infra/k8s/cluster-issuer.yaml` — Let's Encrypt prod ClusterIssuer (HTTP-01 via nginx)
+
+**Working deploy flow (see full runbook: `docs/runbooks/aks-deploy.md`):**
+1. `az account show` — confirm subscription
+2. `make bicep-deploy` — provisions RG, VNet, ACR, Key Vault, AKS (uses `main.bicepparam`)
+3. `make kv-populate KV_NAME=kv-contextforge-dev` — generate all secrets in KV
+4. `make cluster-bootstrap` — installs nginx-ingress + cert-manager, applies ClusterIssuer + SecretProviderClass
+5. `make helm-aks-secrets KV_NAME=kv-contextforge-dev` — deploy ContextForge with secrets from KV
+6. Verify: `curl https://contextforge.gourmandtech.com/health`
+
+**Critical Phase 3 lessons learned (see runbook for full detail):**
+
+- **maxPods is immutable** — changing it requires AKS cluster deletion. Set `maxPodsPerNode: 50` in Bicep upfront (Azure CNI default of 30 is too low for observability add-ons like cert-manager).
+- **Role assignment idempotency** — after AKS deletion, orphaned RG-scoped role assignments block redeployment with `RoleAssignmentUpdateNotPermitted`. Clean them before redeploying: `az role assignment list -g rg-contextforge-dev --query "[?principalName=='' || principalName==null].id" -o tsv | xargs -I {} az role assignment delete --ids {}`
+- **BASIC_AUTH_PASSWORD** — gateway crashes even with `API_ALLOW_BASIC_AUTH: "false"` if the secret is weak. Must supply a strong value via `--set` from KV.
+- **Migration Job deadlock** — `migration.enabled: true` + `helm --wait` deadlocks on single replica. Keep `migration.enabled: false`; gateway self-migrates on boot.
+- **Azure Standard LB SNAT asymmetry** — the root cause of external port 80 timeouts. AKS creates two frontend IPs: one for the nginx ingress service (`a6e0a676...` = 52.226.253.79) and one for the system LB (`90989c11-...`). The `aksOutboundRule` only references the system frontend IP. With `DisableOutboundSnat: true` on the inbound rule, response packets are SNAT'd via the wrong public IP — clients drop them. **Fix:** `controller.service.externalTrafficPolicy: Local` on nginx-ingress. This bypasses kube-proxy SNAT entirely (direct pod→client path) and creates a health-check nodeport that returns 200 so the LB probe passes.
+- **Let's Encrypt + `.nip.io`** — LE does not issue certificates for nip.io. Use a real domain.
+- **Cloudflare proxy must be gray-cloud** for HTTP-01 ACME challenge — orange-cloud (proxy) breaks the challenge because LE sees Cloudflare's IP, not the LB IP.
+- **kubelogin** — required for AKS with Azure AD RBAC. `make aks-creds` auto-installs arm64 binary and runs `kubelogin convert-kubeconfig -l azurecli`. Re-run after devcontainer restart.
 
 ---
 
@@ -123,7 +158,7 @@ Deploying IBM ContextForge — an open-source AI Gateway that federates MCP serv
 |---|---|---|
 | 1 | Local Docker Compose — understand ContextForge fundamentals | ✅ |
 | 2 | Minikube — deploy full Helm stack, learn k8s primitives | ✅ |
-| 3 | AKS — deploy to Azure with Bicep IaC, production-grade config | ⬜ |
+| 3 | AKS — deploy to Azure with Bicep IaC, production-grade config | ✅ |
 | 4 | Federated MCP — register multiple MCP servers, RBAC + OAuth | ⬜ |
 | 5 | Agent automation — A2A protocol, multi-agent orchestration | ⬜ |
 

@@ -1,5 +1,5 @@
 {
-  "name": "AI Engineering — ContextForge Dev",
+  "name": "AI Engineering \u2014 ContextForge Dev",
   "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
   "features": {
     "ghcr.io/devcontainers/features/azure-cli:1": {
@@ -20,7 +20,7 @@
     },
     "ghcr.io/devcontainers/features/git:1": {}
   },
-  "postCreateCommand": "bash scripts/setup.sh",
+  "postCreateCommand": "bash scripts/setup.sh && az aks install-cli || true",
   "customizations": {
     "vscode": {
       "extensions": [
@@ -60,6 +60,7 @@
         },
         "yaml.format.enable": true,
         "bicep.enableSurveys": false,
+        "bicep.path": "/usr/local/bin/bicep",
         "python.defaultInterpreterPath": "/usr/local/bin/python",
         "shellcheck.enable": true,
         "shellcheck.run": "onType",
