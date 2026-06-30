@@ -13,6 +13,7 @@ NAMESPACE        ?= mcp
 HELM_RELEASE     ?= mcp-stack
 HELM_CHART       ?= .contextforge/charts/mcp-stack
 HELM_VALUES      ?= infra/helm/values.yaml
+HELM_VALUES_AKS  ?= infra/helm/values.azure.yaml
 MINIKUBE_PROFILE ?= mcpgw
 AZ_LOCATION      ?= eastus
 
@@ -118,12 +119,31 @@ az-login: ## Authenticate to Azure
 	az login
 	@echo "Subscription: $$(az account show --query name -o tsv)"
 
+az-register: ## Register all Azure resource providers required by this stack (run once per subscription)
+	@echo "Registering required providers (this takes ~2 min, watch with: az provider list --query \"[?registrationState=='Registering']\" -o table)"
+	az provider register --namespace Microsoft.ContainerService
+	az provider register --namespace Microsoft.OperationsManagement
+	az provider register --namespace Microsoft.OperationalInsights
+	az provider register --namespace Microsoft.Insights
+	az provider register --namespace Microsoft.KeyVault
+	az provider register --namespace Microsoft.ContainerRegistry
+	az provider register --namespace Microsoft.Network
+	@echo "Waiting for registration to complete..."
+	@for ns in Microsoft.ContainerService Microsoft.OperationsManagement Microsoft.OperationalInsights Microsoft.Insights; do \
+	  echo -n "  $$ns: "; \
+	  for i in $$(seq 1 30); do \
+	    state=$$(az provider show --namespace $$ns --query registrationState -o tsv 2>/dev/null); \
+	    if [ "$$state" = "Registered" ]; then echo "✓"; break; fi; \
+	    sleep 5; \
+	  done; \
+	done
+	@echo "✓ All providers registered"
+
 bicep-validate: ## Validate Bicep templates without deploying
 	az bicep build --file infra/bicep/main.bicep
 	az deployment sub validate \
 	  --location $(AZ_LOCATION) \
-	  --template-file infra/bicep/main.bicep \
-	  --parameters infra/bicep/main.parameters.json
+	  --parameters infra/bicep/main.bicepparam
 	@echo "✓ Bicep validation passed"
 
 bicep-deploy: bicep-validate ## Deploy Azure infrastructure via Bicep (prompts for confirmation)
@@ -131,28 +151,129 @@ bicep-deploy: bicep-validate ## Deploy Azure infrastructure via Bicep (prompts f
 	@read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
 	az deployment sub create \
 	  --location $(AZ_LOCATION) \
-	  --template-file infra/bicep/main.bicep \
-	  --parameters infra/bicep/main.parameters.json \
+	  --parameters infra/bicep/main.bicepparam \
 	  --name "contextforge-$$(date +%Y%m%d-%H%M%S)"
 
-aks-creds: ## Pull AKS kubeconfig and set context
+bicep-outputs: ## Show outputs from the last Bicep deployment
+	@az deployment sub show \
+	  --name "$$(az deployment sub list --query '[0].name' -o tsv)" \
+	  --query properties.outputs \
+	  -o json | jq '{aksCluster: .aksClusterName.value, acr: .acrLoginServer.value, keyVault: .keyVaultName.value, oidcIssuer: .oidcIssuerUrl.value}'
+
+kv-populate: ## Generate and store ContextForge secrets in Key Vault (KV_NAME required)
+	@test -n "$(KV_NAME)" || (echo "Usage: make kv-populate KV_NAME=kv-contextforge-dev" && exit 1)
+	@echo "Populating Key Vault: $(KV_NAME)"
+	az keyvault secret set --vault-name $(KV_NAME) --name jwt-secret-key         --value "$$(openssl rand -base64 32)" -o none
+	az keyvault secret set --vault-name $(KV_NAME) --name auth-encryption-secret --value "$$(openssl rand -base64 32)" -o none
+	az keyvault secret set --vault-name $(KV_NAME) --name default-user-password  --value "$$(openssl rand -base64 18)" -o none
+	az keyvault secret set --vault-name $(KV_NAME) --name basic-auth-password    --value "$$(openssl rand -base64 18)" -o none
+	@echo "✓ Secrets written. Set platform-admin-email and platform-admin-password manually."
+	@echo "  az keyvault secret set --vault-name $(KV_NAME) --name platform-admin-email --value 'you@example.com'"
+	@echo "  az keyvault secret set --vault-name $(KV_NAME) --name platform-admin-password --value 'YourPassword'"
+
+aks-delete: ## Delete the AKS cluster and its orphaned role assignments (preserves ACR, Key Vault, VNet)
+	@echo "WARNING: This deletes $(AKS_CLUSTER). ACR, Key Vault, and VNet are preserved."
+	@read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
+	az aks delete \
+	  --resource-group $(RESOURCE_GROUP) \
+	  --name $(AKS_CLUSTER) \
+	  --yes
+	@echo "Cluster deleted. Cleaning up orphaned role assignments..."
+	@STALE=$$(az role assignment list -g $(RESOURCE_GROUP) \
+	  --query "[?principalName=='' || principalName==null].id" -o tsv 2>/dev/null); \
+	if [ -n "$$STALE" ]; then \
+	  echo "$$STALE" | xargs -I {} az role assignment delete --ids {} && echo "✓ Stale role assignments removed"; \
+	else \
+	  echo "✓ No stale role assignments found"; \
+	fi
+
+cluster-bootstrap: aks-creds ## Install nginx ingress + cert-manager and apply cluster manifests (run once after AKS is provisioned)
+	@echo "=== Installing nginx ingress controller ==="
+	helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx 2>/dev/null || true
+	helm repo update
+	helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+	  --namespace ingress-nginx --create-namespace \
+	  --set controller.service.type=LoadBalancer \
+	  --set controller.service.annotations."service\.beta\.kubernetes\.io/azure-load-balancer-health-probe-protocol"=tcp \
+	  --wait --timeout=5m
+	@echo "External IP: $$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+	@echo "=== Installing cert-manager ==="
+	helm repo add jetstack https://charts.jetstack.io 2>/dev/null || true
+	helm repo update
+	helm upgrade --install cert-manager jetstack/cert-manager \
+	  --namespace cert-manager --create-namespace \
+	  --set installCRDs=true \
+	  --wait --timeout=5m
+	@echo "=== Applying cluster manifests ==="
+	kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+	@TENANT_ID=$$(az account show --query tenantId -o tsv); \
+	CSI_CLIENT_ID=$$(az aks show -g $(RESOURCE_GROUP) -n $(AKS_CLUSTER) \
+	  --query addonProfiles.azureKeyvaultSecretsProvider.identity.clientId -o tsv); \
+	sed \
+	  -e "s/<TENANT_ID>/$$TENANT_ID/" \
+	  -e "s/<KV_NAME>/kv-contextforge-dev/" \
+	  -e "s/<CSI_DRIVER_CLIENT_ID>/$$CSI_CLIENT_ID/" \
+	  infra/k8s/secret-provider-class.yaml | kubectl apply -n $(NAMESPACE) -f -
+	kubectl apply -f infra/k8s/cluster-issuer.yaml
+	@echo "✓ Cluster bootstrap complete. Run: make helm-aks-secrets KV_NAME=kv-contextforge-dev"
+
+aks-creds: ## Pull AKS kubeconfig, install kubelogin if missing, and set context
+	@if ! command -v kubelogin >/dev/null 2>&1; then \
+	  echo "kubelogin not found — installing arm64 binary to ~/.local/bin ..."; \
+	  ARCH=$$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/'); \
+	  curl -sSLo /tmp/kubelogin.zip "https://github.com/Azure/kubelogin/releases/latest/download/kubelogin-linux-$${ARCH}.zip"; \
+	  unzip -q /tmp/kubelogin.zip -d /tmp/kubelogin; \
+	  mkdir -p ~/.local/bin && mv /tmp/kubelogin/bin/linux_$${ARCH}/kubelogin ~/.local/bin/; \
+	  export PATH="$$HOME/.local/bin:$$PATH"; \
+	  echo 'export PATH="$$HOME/.local/bin:$$PATH"' >> ~/.bashrc; \
+	  echo "✓ kubelogin installed"; \
+	fi
 	az aks get-credentials \
 	  --resource-group $(RESOURCE_GROUP) \
 	  --name $(AKS_CLUSTER) \
 	  --overwrite-existing
+	kubelogin convert-kubeconfig -l azurecli
 	kubectl config use-context $(AKS_CLUSTER)
 	@echo "✓ Context: $$(kubectl config current-context)"
 	kubectl get nodes
+
+
+aks-status: ## Show AKS Helm release status and pod health
+	@echo "=== Helm Release ==="
+	helm status $(HELM_RELEASE) -n $(NAMESPACE)
+	@echo "=== Pods ==="
+	kubectl get pods -n $(NAMESPACE) -o wide
+	@echo "=== Certificate ==="
+	kubectl get certificate -n $(NAMESPACE) 2>/dev/null || echo "cert-manager not installed"
+	@echo "=== Ingress ==="
+	kubectl get ingress -n $(NAMESPACE)
+
+helm-aks-secrets: aks-creds ## Deploy ContextForge to AKS, pulling secrets from Key Vault at deploy time (KV_NAME required)
+	@test -n "$(KV_NAME)" || (echo "Usage: make helm-aks-secrets KV_NAME=kv-contextforge-dev" && exit 1)
+	@echo "WARNING: Deploying to AKS cluster: $(AKS_CLUSTER) with secrets from $(KV_NAME)"
+	@read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
+	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
+	  --namespace $(NAMESPACE) --create-namespace \
+	  --values $(HELM_VALUES) \
+	  --values $(HELM_VALUES_AKS) \
+	  --set "mcpContextForge.secret.JWT_SECRET_KEY=$$(az keyvault secret show --vault-name $(KV_NAME) --name jwt-secret-key --query value -o tsv)" \
+	  --set "mcpContextForge.secret.AUTH_ENCRYPTION_SECRET=$$(az keyvault secret show --vault-name $(KV_NAME) --name auth-encryption-secret --query value -o tsv)" \
+	  --set "mcpContextForge.secret.PLATFORM_ADMIN_EMAIL=$$(az keyvault secret show --vault-name $(KV_NAME) --name platform-admin-email --query value -o tsv)" \
+	  --set "mcpContextForge.secret.PLATFORM_ADMIN_PASSWORD=$$(az keyvault secret show --vault-name $(KV_NAME) --name platform-admin-password --query value -o tsv)" \
+	  --set "mcpContextForge.secret.DEFAULT_USER_PASSWORD=$$(az keyvault secret show --vault-name $(KV_NAME) --name default-user-password --query value -o tsv)" \
+	  --set "mcpContextForge.secret.BASIC_AUTH_PASSWORD=$$(az keyvault secret show --vault-name $(KV_NAME) --name basic-auth-password --query value -o tsv)" \
+	  --wait --timeout=10m
+	@$(MAKE) aks-status
 
 helm-aks: aks-creds ## Deploy/upgrade ContextForge to AKS (prompts for confirmation)
 	@echo "WARNING: Deploying to AKS cluster: $(AKS_CLUSTER)"
 	@read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
 	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
 	  --namespace $(NAMESPACE) --create-namespace \
-	  --values $(HELM_CHART)/values.yaml \
-	  --values $(HELM_CHART)/values.azure.yaml \
+	  --values $(HELM_VALUES) \
+	  --values $(HELM_VALUES_AKS) \
 	  --wait --timeout=10m
-	@$(MAKE) helm-status
+	@$(MAKE) aks-status
 
 # ─────────────────────────────────────────────────────────────
 # MCP Gateway Operations
