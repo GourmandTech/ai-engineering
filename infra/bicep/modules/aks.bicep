@@ -25,10 +25,23 @@ param adminObjectId string = ''
 @description('System node pool VM size')
 param nodeVmSize string = 'Standard_D2s_v7'
 
-@description('Initial system node count')
+@description('Initial/minimum system node count')
 @minValue(1)
 @maxValue(5)
 param nodeCount int = 1
+
+@description('Enable the cluster autoscaler on the system node pool. IMPORTANT: this was enabled manually via the Azure Portal on 2026-07-02 after a single-node CPU exhaustion incident (see docs/runbooks/phase4-federated-mcp.md), outside of Bicep. Keep this true and keep minNodeCount/maxNodeCount matching the live portal config — setting this false (the old default) and redeploying will silently scale the pool back down to a fixed `nodeCount` nodes and can starve pod scheduling again.')
+param enableAutoScaling bool = true
+
+@description('Autoscaler floor — only used when enableAutoScaling is true')
+@minValue(1)
+@maxValue(10)
+param minNodeCount int = 2
+
+@description('Autoscaler ceiling — only used when enableAutoScaling is true')
+@minValue(1)
+@maxValue(20)
+param maxNodeCount int = 10
 
 @description('OS disk size in GB (0 = use managed default)')
 param osDiskSizeGB int = 50
@@ -57,24 +70,35 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-01-01' = {
     dnsPrefix: clusterName
 
     // ── Node pool ──────────────────────────────────────────────────────────
+    // count/minCount/maxCount split out via union() so the minCount/maxCount
+    // keys are only present in the request when enableAutoScaling is true —
+    // AKS rejects them outright on a non-autoscaling pool.
     agentPoolProfiles: [
-      {
-        name: 'system'
-        mode: 'System'
-        count: nodeCount
-        vmSize: nodeVmSize
-        osDiskSizeGB: osDiskSizeGB
-        osDiskType: 'Managed'
-        osType: 'Linux'
-        osSKU: 'AzureLinux'
-        vnetSubnetID: aksSubnetId
-        maxPods: maxPodsPerNode
-        enableAutoScaling: false   // enable HPA; cluster autoscaler is optional for dev
-        type: 'VirtualMachineScaleSets'
-        upgradeSettings: {
-          maxSurge: '1'
-        }
-      }
+      union(
+        {
+          name: 'system'
+          mode: 'System'
+          count: nodeCount
+          vmSize: nodeVmSize
+          osDiskSizeGB: osDiskSizeGB
+          osDiskType: 'Managed'
+          osType: 'Linux'
+          osSKU: 'AzureLinux'
+          vnetSubnetID: aksSubnetId
+          maxPods: maxPodsPerNode
+          enableAutoScaling: enableAutoScaling
+          type: 'VirtualMachineScaleSets'
+          upgradeSettings: {
+            maxSurge: '1'
+          }
+        },
+        enableAutoScaling
+          ? {
+              minCount: minNodeCount
+              maxCount: maxNodeCount
+            }
+          : {}
+      )
     ]
 
     // ── Networking ────────────────────────────────────────────────────────

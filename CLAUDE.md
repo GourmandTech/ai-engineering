@@ -14,7 +14,7 @@ Full runbook: `docs/runbooks/phase4-federated-mcp.md`
 | Server | Source | Transport | Status |
 |---|---|---|---|
 | SRE Toolbox MCP | `services/sre-mcp-server/` (custom Python FastMCP) | SSE | ✅ Running in AKS + registered in ContextForge |
-| GitHub MCP | `github/github-mcp-server` (official) | SSE | ⬜ |
+| GitHub MCP | `github/github-mcp-server` (official, self-hosted) | stdio via `mcpgateway.translate` wrapper | ✅ Running in AKS + registered in ContextForge |
 | Azure DevOps MCP | `microsoft/azure-devops-mcp` (official) | stdio→SSE | ⬜ |
 | Kubernetes MCP | community | stdio→SSE | ⬜ |
 | Prometheus MCP | community | stdio→SSE | ⬜ |
@@ -23,12 +23,15 @@ Full runbook: `docs/runbooks/phase4-federated-mcp.md`
 1. ✅ Build + push SRE Toolbox MCP container to ACR (`make sre-mcp-build`)
 2. ✅ Deploy SRE Toolbox to AKS (`make sre-mcp-deploy`) — pod `1/1 Running`
 3. ✅ Register SRE Toolbox in ContextForge (`make mcp-register-sre`) — `status: active`, 5 tools federated
-4. ⬜ Register remaining MCP servers (GitHub, Azure DevOps, Kubernetes, Prometheus)
+4. 🔄 Register remaining MCP servers (GitHub, Azure DevOps, Kubernetes, Prometheus)
+   - GitHub: ✅ COMPLETE 2026-07-02 — pod `1/1 Running`, registered, `status: active`, `reachable: true`, 22 tools federated. Hit five real bugs on the way, all fixed (full writeup: runbook Step 2 incident log): (1) `AADSTS70025` — CSI SecretProviderClass pointed at the wrong identity, fixed with a dedicated per-workload identity (`infra/bicep/modules/workload-identity.bicep`, reusable for Steps 3-5); (2) `make bicep-deploy` reverted the node pool autoscaler — fixed, see Node pool note above; (3) `mcpgateway.translate` invoked with flags that don't exist in the published package (`--expose-sse`) — fixed, pinned to `mcp-contextforge-gateway==0.1.1`; (4) NetworkPolicy ingress label guessed wrong (`app.kubernetes.io/name: mcpgateway` vs actual `app: mcp-stack-mcpgateway`) — fixed; (5) wrapped binary invoked without its required `stdio` positional subcommand, silently exiting instantly — fixed. `make github-mcp-deploy` also now force-restarts the rollout, since a `:latest`-tagged image rebuild doesn't otherwise trigger one.
 5. ⬜ Create RBAC teams (`sre-team`, `dev-team`) and virtual servers
 6. ⬜ Configure Entra ID app registration + SSO in Helm values
 
 **Key Phase 4 design decisions:**
-- stdio MCP servers (Azure DevOps MCP, Azure MCP) wrapped via `mcpgateway.translate` → SSE
+- stdio MCP servers (GitHub, Azure DevOps MCP, Azure MCP) wrapped via `mcpgateway.translate` → SSE — GitHub's upstream binary is stdio-only (confirmed from its own Dockerfile), the vendor's only HTTP transport is the non-self-hostable `api.githubcopilot.com/mcp/`
+- GitHub MCP self-hosted in-cluster rather than registered against GitHub's remote hosted endpoint — keeps the PAT and API traffic inside the AKS network boundary; the PAT is synced via Key Vault CSI directly into the `github-mcp-server` pod and never touches ContextForge's own gateway config
+- GitHub App auth (short-lived installation tokens, no PAT rotation) is the stronger long-term auth pattern but is currently broken upstream — `github-mcp-server` forces a `GET /user` check that doesn't work with App auth ([issue #1610](https://github.com/github/github-mcp-server/issues/1610)). Using a fine-grained, repo-scoped PAT on a bot account as the interim approach; revisit when that's fixed.
 - RBAC: API key auth for service accounts first, Entra ID OIDC SSO for human users second
 - Virtual servers as the RBAC boundary — tools are `visibility=public` by default (set explicitly)
 - Tool namespacing: ContextForge names tools as `<gateway-name>-<tool-name>` (hyphens, not `__`)
@@ -85,7 +88,7 @@ Confirmed 2026-06-30: `curl https://contextforge.gourmandtech.com/health` → `{
 
 **Production URL:** `https://contextforge.gourmandtech.com`
 
-**Node pool:** `system` — autoscaling enabled (min: 2, max: 10), configured 2026-07-02 via Azure Portal after single-node CPU exhaustion when sre-mcp-server was added alongside the gateway.
+**Node pool:** `system` — autoscaling enabled (min: 2, max: 10), configured 2026-07-02 via Azure Portal after single-node CPU exhaustion when sre-mcp-server was added alongside the gateway. This was Portal-only until 2026-07-02: a later `make bicep-deploy` (for the Phase 4 workload identity) silently reverted it back to a fixed 1-node pool via `infra/bicep/modules/aks.bicep`'s stale `enableAutoScaling: false` default, causing a second CPU-exhaustion-shaped outage (gateway pod `FailedScheduling`). Now fixed in IaC — `enableAutoScaling`/`minNodeCount`/`maxNodeCount` are real Bicep params defaulting to true/2/10, so `bicep-deploy` is safe to re-run. See `docs/runbooks/phase4-federated-mcp.md` Step 2 incident log.
 
 **IaC files:**
 - `infra/bicep/main.bicep` — subscription-scoped deployment, derives all resource names from params

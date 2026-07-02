@@ -15,3 +15,10 @@ param kubernetesVersion = '1.35'
 
 param nodeVmSize = 'Standard_D2s_v7'
 param nodeCount = 1
+
+// Matches the live node pool config set via Azure Portal on 2026-07-02 after
+// a single-node CPU exhaustion incident. Keep this in sync with reality —
+// see modules/aks.bicep's enableAutoScaling description.
+param enableAutoScaling = true
+param minNodeCount = 2
+param maxNodeCount = 10

@@ -33,10 +33,19 @@ param kubernetesVersion string = '1.35'
 @description('System node pool VM size')
 param nodeVmSize string = 'Standard_D2s_v7'
 
-@description('System node pool initial count')
+@description('System node pool initial/minimum count')
 @minValue(1)
 @maxValue(5)
 param nodeCount int = 1
+
+@description('Enable cluster autoscaler on the system node pool — see modules/aks.bicep for why this must stay true (live config was set via Portal, not IaC, after a 2026-07-02 CPU exhaustion incident; redeploying with this false reverts it)')
+param enableAutoScaling bool = true
+
+@description('Autoscaler floor, only used when enableAutoScaling is true')
+param minNodeCount int = 2
+
+@description('Autoscaler ceiling, only used when enableAutoScaling is true')
+param maxNodeCount int = 10
 
 @description('Maximum pods per node. Increase from Azure CNI default of 30 when running observability add-ons.')
 @minValue(10)
@@ -137,6 +146,31 @@ module aks 'modules/aks.bicep' = {
     nodeVmSize: nodeVmSize
     nodeCount: nodeCount
     maxPodsPerNode: maxPodsPerNode
+    enableAutoScaling: enableAutoScaling
+    minNodeCount: minNodeCount
+    maxNodeCount: maxNodeCount
+  }
+}
+
+// ── Workload identities (Phase 4 — per-MCP-server Key Vault access) ──────────
+// One dedicated UAMI + federated credential per workload ServiceAccount that
+// needs to read a Key Vault secret via the CSI driver — see
+// modules/workload-identity.bicep for why this exists (the AKS Key Vault CSI
+// add-on's own identity is not meant to be federated against by application
+// pods). Reuse this module for Step 3-5 MCP servers that need their own
+// credentials (e.g. Azure DevOps PAT).
+
+module githubMcpIdentity 'modules/workload-identity.bicep' = {
+  name: 'deploy-github-mcp-identity'
+  scope: rg
+  params: {
+    name: 'id-github-mcp-server'
+    location: location
+    tags: commonTags
+    oidcIssuerUrl: aks.outputs.oidcIssuerUrl
+    serviceAccountNamespace: 'mcp'
+    serviceAccountName: 'github-mcp-server'
+    keyVaultId: keyVault.outputs.keyVaultId
   }
 }
 
@@ -165,3 +199,6 @@ output oidcIssuerUrl string = aks.outputs.oidcIssuerUrl
 
 @description('CSI driver managed identity object ID — already granted Key Vault Secrets User')
 output csiDriverIdentityObjectId string = aks.outputs.csiDriverIdentityObjectId
+
+@description('GitHub MCP workload identity client ID — use in the ServiceAccount azure.workload.identity/client-id annotation and the SecretProviderClass clientID')
+output githubMcpIdentityClientId string = githubMcpIdentity.outputs.clientId

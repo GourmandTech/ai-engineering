@@ -2,6 +2,8 @@
         minikube-start helm-install helm-upgrade helm-status helm-diff helm-uninstall \
         az-login bicep-validate bicep-deploy aks-creds helm-aks \
         mcp-register mcp-status port-forward \
+        sre-mcp-build sre-mcp-deploy github-mcp-build github-mcp-deploy \
+        mcp-get-token mcp-list-gateways mcp-list-tools mcp-register-sre mcp-register-github \
         lint clean
 
 # ─────────────────────────────────────────────────────────────
@@ -171,6 +173,9 @@ kv-populate: ## Generate and store ContextForge secrets in Key Vault (KV_NAME re
 	@echo "✓ Secrets written. Set platform-admin-email and platform-admin-password manually."
 	@echo "  az keyvault secret set --vault-name $(KV_NAME) --name platform-admin-email --value 'you@example.com'"
 	@echo "  az keyvault secret set --vault-name $(KV_NAME) --name platform-admin-password --value 'YourPassword'"
+	@echo "  az keyvault secret set --vault-name $(KV_NAME) --name github-mcp-pat --value 'YourFineGrainedPAT'"
+	@echo "    (fine-grained PAT, repo-scoped, from a bot/machine account — see"
+	@echo "     infra/k8s/github-mcp-secrets-provider.yaml for generation guidance)"
 
 aks-delete: ## Delete the AKS cluster and its orphaned role assignments (preserves ACR, Key Vault, VNet)
 	@echo "WARNING: This deletes $(AKS_CLUSTER). ACR, Key Vault, and VNet are preserved."
@@ -318,6 +323,8 @@ mcp-register: ## Register a new MCP server (MCP_NAME and MCP_URL required)
 # ─────────────────────────────────────────────────────────────
 SRE_MCP_IMAGE    ?= sre-mcp-server
 SRE_MCP_TAG      ?= latest
+GITHUB_MCP_IMAGE ?= github-mcp-server
+GITHUB_MCP_TAG   ?= latest
 GATEWAY_URL      ?= https://contextforge.gourmandtech.com
 
 sre-mcp-build: ## Build SRE Toolbox MCP image locally and push to ACR (az acr build/Tasks not permitted on this subscription)
@@ -327,6 +334,14 @@ sre-mcp-build: ## Build SRE Toolbox MCP image locally and push to ACR (az acr bu
 	docker build --platform linux/amd64 -t $(ACR)/$(SRE_MCP_IMAGE):$(SRE_MCP_TAG) services/sre-mcp-server/
 	docker push $(ACR)/$(SRE_MCP_IMAGE):$(SRE_MCP_TAG)
 	@echo "✓ Pushed: $(ACR)/$(SRE_MCP_IMAGE):$(SRE_MCP_TAG)"
+
+github-mcp-build: ## Build GitHub MCP wrapper image (stdio->SSE bridge) and push to ACR
+	$(eval ACR := $(shell az acr list -g $(RESOURCE_GROUP) --query '[0].loginServer' -o tsv))
+	@test -n "$(ACR)" || (echo "ERROR: No ACR found in $(RESOURCE_GROUP)" && exit 1)
+	az acr login --name $(shell echo $(ACR) | cut -d. -f1)
+	docker build --platform linux/amd64 -t $(ACR)/$(GITHUB_MCP_IMAGE):$(GITHUB_MCP_TAG) services/github-mcp-wrapper/
+	docker push $(ACR)/$(GITHUB_MCP_IMAGE):$(GITHUB_MCP_TAG)
+	@echo "✓ Pushed: $(ACR)/$(GITHUB_MCP_IMAGE):$(GITHUB_MCP_TAG)"
 
 aks-scale: ## Manually scale the system node pool (NODE_COUNT required; autoscaler overrides this when active)
 	az aks nodepool scale \
@@ -339,6 +354,28 @@ sre-mcp-deploy: aks-creds ## Deploy SRE Toolbox MCP server to AKS
 	kubectl apply -f infra/k8s/sre-mcp-server.yaml -n $(NAMESPACE)
 	kubectl rollout status deployment/sre-mcp-server -n $(NAMESPACE) --timeout=3m
 	@echo "✓ sre-mcp-server deployed"
+
+github-mcp-deploy: aks-creds ## Deploy self-hosted GitHub MCP server to AKS (requires: make bicep-deploy has run, github-mcp-pat in Key Vault)
+	@TENANT_ID=$$(az account show --query tenantId -o tsv); \
+	IDENTITY_CLIENT_ID=$$(az identity show -g $(RESOURCE_GROUP) -n id-github-mcp-server --query clientId -o tsv); \
+	test -n "$$IDENTITY_CLIENT_ID" || (echo "ERROR: id-github-mcp-server not found — run 'make bicep-deploy' first (adds it via modules/workload-identity.bicep)" && exit 1); \
+	sed \
+	  -e "s/<TENANT_ID>/$$TENANT_ID/" \
+	  -e "s/<KV_NAME>/kv-contextforge-dev/" \
+	  -e "s/<GITHUB_MCP_IDENTITY_CLIENT_ID>/$$IDENTITY_CLIENT_ID/" \
+	  infra/k8s/github-mcp-secrets-provider.yaml | kubectl apply -n $(NAMESPACE) -f -; \
+	sed \
+	  -e "s/<GITHUB_MCP_IDENTITY_CLIENT_ID>/$$IDENTITY_CLIENT_ID/" \
+	  infra/k8s/github-mcp-server.yaml | kubectl apply -n $(NAMESPACE) -f -
+	@# Same reasoning as make helm-aks-secrets: GITHUB_MCP_TAG defaults to
+	@# `latest` and the Deployment YAML text doesn't change between image
+	@# rebuilds, so `kubectl apply` alone reports "unchanged" and never
+	@# schedules a new pod even after `make github-mcp-build` pushed a new
+	@# image — kubectl has no way to know the tag's content changed. Force it.
+	kubectl rollout restart deployment/github-mcp-server -n $(NAMESPACE)
+	kubectl rollout status deployment/github-mcp-server -n $(NAMESPACE) --timeout=3m
+	@echo "✓ github-mcp-server deployed"
+	@echo "  Verify the PAT synced: kubectl get secret github-mcp-secrets -n $(NAMESPACE) -o jsonpath='{.data.GITHUB_PERSONAL_ACCESS_TOKEN}' | base64 -d | wc -c"
 
 mcp-get-token: ## Get a ContextForge JWT — pulls password from Key Vault (KV_NAME required; set ADMIN_EMAIL or uses KV platform-admin-email)
 	$(eval KV  := $(or $(KV_NAME),kv-contextforge-dev))
@@ -371,13 +408,12 @@ mcp-register-sre: ## Register SRE Toolbox MCP server in ContextForge (JWT_TOKEN 
 	  -d '{"name":"sre-toolbox","url":"http://sre-mcp-server.mcp.svc.cluster.local:8000/sse","transport":"SSE","description":"Custom SRE toolbox — healthchecks, k8s, Azure, Prometheus","tags":["sre","custom","azure","kubernetes"],"visibility":"public"}' \
 	  | jq .
 
-mcp-register-github: ## Register GitHub MCP server (GITHUB_PAT and JWT_TOKEN required)
+mcp-register-github: ## Register self-hosted GitHub MCP gateway (JWT_TOKEN required — no PAT here, it lives in the pod via Key Vault CSI)
 	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
-	@test -n "$(GITHUB_PAT)" || (echo "Set GITHUB_PAT first" && exit 1)
 	curl -sX POST $(GATEWAY_URL)/gateways \
 	  -H "Authorization: Bearer $(JWT_TOKEN)" \
 	  -H "Content-Type: application/json" \
-	  -d "{\"name\":\"github-mcp\",\"url\":\"https://api.githubcopilot.com/mcp/\",\"transport\":\"SSE\",\"auth_type\":\"bearer\",\"auth_token\":\"$(GITHUB_PAT)\",\"description\":\"GitHub — repos, PRs, issues, Actions\",\"tags\":[\"github\",\"vcs\",\"ci-cd\"],\"visibility\":\"public\"}" \
+	  -d '{"name":"github-mcp","url":"http://github-mcp-server.mcp.svc.cluster.local:8000/sse","transport":"SSE","description":"GitHub — repos, PRs, issues, Actions (self-hosted, read-only, in-cluster)","tags":["github","vcs","ci-cd"],"visibility":"public"}' \
 	  | jq .
 
 # ─────────────────────────────────────────────────────────────

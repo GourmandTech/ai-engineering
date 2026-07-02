@@ -1,0 +1,193 @@
+---
+# GitHub MCP Server (self-hosted, read-only) — Kubernetes Deployment + Service
+# Runs inside AKS (mcp namespace), registered as a gateway in ContextForge.
+#
+# Architecture decision (2026-07-02): self-hosted in-cluster rather than pointing
+# ContextForge at GitHub's remote hosted MCP (https://api.githubcopilot.com/mcp/).
+# Rationale: keeps GitHub API traffic and the PAT inside the AKS network boundary,
+# avoids an external runtime dependency, and lets us apply the same image-pinning /
+# least-privilege / NetworkPolicy controls used everywhere else in this cluster.
+# The upstream github-mcp-server binary only speaks stdio, so this pod wraps it
+# with mcpgateway.translate — see services/github-mcp-wrapper/Dockerfile for the
+# full rationale and build.
+#
+# Unlike ContextForge's remote-MCP registration (Option A in the runbook), the
+# GitHub PAT never touches ContextForge's gateway config — it's injected directly
+# into this pod via the Key Vault CSI driver and consumed locally by the
+# github-mcp-server process. ContextForge only ever sees a plain in-cluster SSE URL.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: github-mcp-server
+  namespace: mcp
+  labels:
+    app: github-mcp-server
+    phase: "4"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: github-mcp-server
+  template:
+    metadata:
+      labels:
+        app: github-mcp-server
+        # Required for the azure-workload-identity mutating webhook to inject
+        # the projected service account token this pod's CSI mount federates
+        # with. Without this label the webhook ignores the pod entirely and
+        # the CSI driver has no token to present — same failure mode as a
+        # missing federated credential, easy to mix up when debugging.
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: github-mcp-server
+      containers:
+        - name: github-mcp-server
+          image: acrcontextforgedev.azurecr.io/github-mcp-server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: GITHUB_PERSONAL_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-mcp-secrets
+                  key: GITHUB_PERSONAL_ACCESS_TOKEN
+          volumeMounts:
+            - name: kv-secrets
+              mountPath: /mnt/secrets-store
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          livenessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+      # CSI volume must be mounted by at least one pod for the secrets-store
+      # driver to sync github-mcp-kv-secrets -> the github-mcp-secrets k8s Secret
+      # referenced above. (This is a CSI driver requirement, not optional wiring —
+      # the mount is what triggers and keeps the sync alive.)
+      volumes:
+        - name: kv-secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: github-mcp-kv-secrets
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+---
+# ServiceAccount — no Kubernetes RBAC permissions needed. This workload only
+# calls out to api.github.com; it never talks to the k8s API. Deliberately no
+# ClusterRole/ClusterRoleBinding here (contrast with sre-mcp-server, which does
+# need cluster read access for its k8s tools).
+#
+# The client-id annotation below is what ties this SA to the dedicated UAMI
+# created in infra/bicep/modules/workload-identity.bicep (instantiated in
+# main.bicep as `githubMcpIdentity`) — NOT the AKS Key Vault CSI add-on's own
+# identity. Replace <GITHUB_MCP_IDENTITY_CLIENT_ID> with the Bicep output
+# `githubMcpIdentityClientId` (make github-mcp-deploy does this substitution
+# automatically via `az identity show`). automountServiceAccountToken: false
+# is unrelated and safe to keep — the azure-workload-identity webhook injects
+# its own separate projected token volume regardless of this setting.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: github-mcp-server
+  namespace: mcp
+  annotations:
+    azure.workload.identity/client-id: "<GITHUB_MCP_IDENTITY_CLIENT_ID>"
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: github-mcp-server
+  namespace: mcp
+  labels:
+    app: github-mcp-server
+spec:
+  selector:
+    app: github-mcp-server
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+  type: ClusterIP
+---
+# NetworkPolicy — baseline least-privilege network isolation.
+# Ingress: only the ContextForge gateway pods may reach this service.
+# Egress: DNS + HTTPS only (this pod has no legitimate reason to reach any other
+# in-cluster service, the k8s API, or plaintext HTTP).
+#
+# This is a coarse allow-HTTPS-egress rule, not an api.github.com-only allowlist —
+# standard Kubernetes NetworkPolicy is IP/CIDR-based and can't match on FQDN.
+# To tighten further:
+#   - This cluster's CNI is Azure CNI + Calico (see infra/bicep/modules/aks.bicep).
+#     Calico's domain-based egress rules (GlobalNetworkPolicy / NetworkSet with
+#     `allowedEgressDomains`) can allow-list api.github.com by name — verify exact
+#     CRD syntax against the installed Calico version before adopting, since this
+#     has changed across Calico releases.
+#   - Alternative: pin to GitHub's published IP ranges (`curl -s https://api.github.com/meta
+#     | jq .api`) in this policy's egress `to.ipBlock` list, with a reminder that
+#     GitHub rotates these occasionally and the policy needs periodic refresh.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: github-mcp-server
+  namespace: mcp
+spec:
+  podSelector:
+    matchLabels:
+      app: github-mcp-server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Verified 2026-07-02 against the live cluster: `kubectl get pods -n mcp
+    # --show-labels | grep mcpgateway` showed `app=mcp-stack-mcpgateway` (plain
+    # Helm release-name label, no app.kubernetes.io/name key) — the original
+    # guess here (app.kubernetes.io/name: mcpgateway) didn't match anything and
+    # silently blocked ContextForge from reaching this service (ConnectTimeout
+    # on registration). If the Helm release name ever changes from `mcp-stack`
+    # (HELM_RELEASE in the Makefile), this label changes too — recheck then.
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app: mcp-stack-mcpgateway
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

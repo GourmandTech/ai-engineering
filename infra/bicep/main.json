@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "1402252484057619551"
+      "templateHash": "16131494464900643916"
     }
   },
   "parameters": {
@@ -69,7 +69,28 @@
       "minValue": 1,
       "maxValue": 5,
       "metadata": {
-        "description": "System node pool initial count"
+        "description": "System node pool initial/minimum count"
+      }
+    },
+    "enableAutoScaling": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Enable cluster autoscaler on the system node pool — see modules/aks.bicep for why this must stay true (live config was set via Portal, not IaC, after a 2026-07-02 CPU exhaustion incident; redeploying with this false reverts it)"
+      }
+    },
+    "minNodeCount": {
+      "type": "int",
+      "defaultValue": 2,
+      "metadata": {
+        "description": "Autoscaler floor, only used when enableAutoScaling is true"
+      }
+    },
+    "maxNodeCount": {
+      "type": "int",
+      "defaultValue": 10,
+      "metadata": {
+        "description": "Autoscaler ceiling, only used when enableAutoScaling is true"
       }
     },
     "maxPodsPerNode": {
@@ -583,6 +604,15 @@
           },
           "maxPodsPerNode": {
             "value": "[parameters('maxPodsPerNode')]"
+          },
+          "enableAutoScaling": {
+            "value": "[parameters('enableAutoScaling')]"
+          },
+          "minNodeCount": {
+            "value": "[parameters('minNodeCount')]"
+          },
+          "maxNodeCount": {
+            "value": "[parameters('maxNodeCount')]"
           }
         },
         "template": {
@@ -592,7 +622,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "4793843811383138854"
+              "templateHash": "12292801863217677438"
             }
           },
           "parameters": {
@@ -658,7 +688,32 @@
               "minValue": 1,
               "maxValue": 5,
               "metadata": {
-                "description": "Initial system node count"
+                "description": "Initial/minimum system node count"
+              }
+            },
+            "enableAutoScaling": {
+              "type": "bool",
+              "defaultValue": true,
+              "metadata": {
+                "description": "Enable the cluster autoscaler on the system node pool. IMPORTANT: this was enabled manually via the Azure Portal on 2026-07-02 after a single-node CPU exhaustion incident (see docs/runbooks/phase4-federated-mcp.md), outside of Bicep. Keep this true and keep minNodeCount/maxNodeCount matching the live portal config — setting this false (the old default) and redeploying will silently scale the pool back down to a fixed `nodeCount` nodes and can starve pod scheduling again."
+              }
+            },
+            "minNodeCount": {
+              "type": "int",
+              "defaultValue": 2,
+              "minValue": 1,
+              "maxValue": 10,
+              "metadata": {
+                "description": "Autoscaler floor — only used when enableAutoScaling is true"
+              }
+            },
+            "maxNodeCount": {
+              "type": "int",
+              "defaultValue": 10,
+              "minValue": 1,
+              "maxValue": 20,
+              "metadata": {
+                "description": "Autoscaler ceiling — only used when enableAutoScaling is true"
               }
             },
             "osDiskSizeGB": {
@@ -704,23 +759,7 @@
                 "kubernetesVersion": "[parameters('kubernetesVersion')]",
                 "dnsPrefix": "[parameters('clusterName')]",
                 "agentPoolProfiles": [
-                  {
-                    "name": "system",
-                    "mode": "System",
-                    "count": "[parameters('nodeCount')]",
-                    "vmSize": "[parameters('nodeVmSize')]",
-                    "osDiskSizeGB": "[parameters('osDiskSizeGB')]",
-                    "osDiskType": "Managed",
-                    "osType": "Linux",
-                    "osSKU": "AzureLinux",
-                    "vnetSubnetID": "[parameters('aksSubnetId')]",
-                    "maxPods": "[parameters('maxPodsPerNode')]",
-                    "enableAutoScaling": false,
-                    "type": "VirtualMachineScaleSets",
-                    "upgradeSettings": {
-                      "maxSurge": "1"
-                    }
-                  }
+                  "[union(createObject('name', 'system', 'mode', 'System', 'count', parameters('nodeCount'), 'vmSize', parameters('nodeVmSize'), 'osDiskSizeGB', parameters('osDiskSizeGB'), 'osDiskType', 'Managed', 'osType', 'Linux', 'osSKU', 'AzureLinux', 'vnetSubnetID', parameters('aksSubnetId'), 'maxPods', parameters('maxPodsPerNode'), 'enableAutoScaling', parameters('enableAutoScaling'), 'type', 'VirtualMachineScaleSets', 'upgradeSettings', createObject('maxSurge', '1')), if(parameters('enableAutoScaling'), createObject('minCount', parameters('minNodeCount'), 'maxCount', parameters('maxNodeCount')), createObject()))]"
                 ],
                 "networkProfile": {
                   "networkPlugin": "azure",
@@ -835,6 +874,156 @@
         "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-network')]",
         "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('resourceGroupName'))]"
       ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "deploy-github-mcp-identity",
+      "resourceGroup": "[variables('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "name": {
+            "value": "id-github-mcp-server"
+          },
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "tags": {
+            "value": "[variables('commonTags')]"
+          },
+          "oidcIssuerUrl": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-aks'), '2025-04-01').outputs.oidcIssuerUrl.value]"
+          },
+          "serviceAccountNamespace": {
+            "value": "mcp"
+          },
+          "serviceAccountName": {
+            "value": "github-mcp-server"
+          },
+          "keyVaultId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-keyvault'), '2025-04-01').outputs.keyVaultId.value]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.44.1.10279",
+              "templateHash": "208576626405453512"
+            }
+          },
+          "parameters": {
+            "name": {
+              "type": "string",
+              "metadata": {
+                "description": "Name of the user-assigned managed identity, e.g. id-github-mcp-server"
+              }
+            },
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure region"
+              }
+            },
+            "tags": {
+              "type": "object",
+              "metadata": {
+                "description": "Resource tags"
+              }
+            },
+            "oidcIssuerUrl": {
+              "type": "string",
+              "metadata": {
+                "description": "AKS OIDC issuer URL — from aks.bicep output oidcIssuerUrl"
+              }
+            },
+            "serviceAccountNamespace": {
+              "type": "string",
+              "metadata": {
+                "description": "Kubernetes namespace of the workload ServiceAccount, e.g. mcp"
+              }
+            },
+            "serviceAccountName": {
+              "type": "string",
+              "metadata": {
+                "description": "Name of the Kubernetes ServiceAccount this identity federates with, e.g. github-mcp-server"
+              }
+            },
+            "keyVaultId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the Key Vault to grant read access to"
+              }
+            }
+          },
+          "variables": {
+            "kvSecretsUserRoleId": "4633458b-17de-408a-b874-0445c86b69e6"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+              "apiVersion": "2023-01-31",
+              "name": "[parameters('name')]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]"
+            },
+            {
+              "type": "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials",
+              "apiVersion": "2023-01-31",
+              "name": "[format('{0}/{1}', parameters('name'), format('fic-{0}-{1}', parameters('serviceAccountNamespace'), parameters('serviceAccountName')))]",
+              "properties": {
+                "issuer": "[parameters('oidcIssuerUrl')]",
+                "subject": "[format('system:serviceaccount:{0}:{1}', parameters('serviceAccountNamespace'), parameters('serviceAccountName'))]",
+                "audiences": [
+                  "api://AzureADTokenExchange"
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('name'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.KeyVault/vaults', last(split(parameters('keyVaultId'), '/')))]",
+              "name": "[guid(parameters('keyVaultId'), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('name')), variables('kvSecretsUserRoleId'))]",
+              "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('kvSecretsUserRoleId'))]",
+                "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('name')), '2023-01-31').principalId]",
+                "principalType": "ServicePrincipal"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('name'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "identityId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('name'))]"
+            },
+            "clientId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('name')), '2023-01-31').clientId]"
+            },
+            "principalId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('name')), '2023-01-31').principalId]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-aks')]",
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-keyvault')]",
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('resourceGroupName'))]"
+      ]
     }
   ],
   "outputs": {
@@ -893,6 +1082,13 @@
         "description": "CSI driver managed identity object ID — already granted Key Vault Secrets User"
       },
       "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-aks'), '2025-04-01').outputs.csiDriverIdentityObjectId.value]"
+    },
+    "githubMcpIdentityClientId": {
+      "type": "string",
+      "metadata": {
+        "description": "GitHub MCP workload identity client ID — use in the ServiceAccount azure.workload.identity/client-id annotation and the SecretProviderClass clientID"
+      },
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'deploy-github-mcp-identity'), '2025-04-01').outputs.clientId.value]"
     }
   }
 }
