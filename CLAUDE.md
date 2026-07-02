@@ -3,7 +3,46 @@
 ## Mission
 Personal SRE/DevOps learning platform. Goal: demonstrate self-advancement in AI-assisted engineering, agentic coding, and AI automation for job placement. Core background: Microsoft Azure, Azure DevOps, Bicep. Expanding into: AI/ML Ops, agentic infrastructure, federated MCP.
 
-## Current State (updated 2026-06-30)
+## Current State (updated 2026-07-02)
+
+### Phase 4 — IN PROGRESS 🔄 (Federated MCP)
+Full runbook: `docs/runbooks/phase4-federated-mcp.md`
+
+**Goal:** Register multiple MCP servers into ContextForge, apply RBAC teams, and add Entra ID SSO.
+
+**MCP Server Inventory:**
+| Server | Source | Transport | Status |
+|---|---|---|---|
+| SRE Toolbox MCP | `services/sre-mcp-server/` (custom Python FastMCP) | SSE | ✅ Running in AKS + registered in ContextForge |
+| GitHub MCP | `github/github-mcp-server` (official) | SSE | ⬜ |
+| Azure DevOps MCP | `microsoft/azure-devops-mcp` (official) | stdio→SSE | ⬜ |
+| Kubernetes MCP | community | stdio→SSE | ⬜ |
+| Prometheus MCP | community | stdio→SSE | ⬜ |
+
+**Phase 4 sub-tasks:**
+1. ✅ Build + push SRE Toolbox MCP container to ACR (`make sre-mcp-build`)
+2. ✅ Deploy SRE Toolbox to AKS (`make sre-mcp-deploy`) — pod `1/1 Running`
+3. ✅ Register SRE Toolbox in ContextForge (`make mcp-register-sre`) — `status: active`, 5 tools federated
+4. ⬜ Register remaining MCP servers (GitHub, Azure DevOps, Kubernetes, Prometheus)
+5. ⬜ Create RBAC teams (`sre-team`, `dev-team`) and virtual servers
+6. ⬜ Configure Entra ID app registration + SSO in Helm values
+
+**Key Phase 4 design decisions:**
+- stdio MCP servers (Azure DevOps MCP, Azure MCP) wrapped via `mcpgateway.translate` → SSE
+- RBAC: API key auth for service accounts first, Entra ID OIDC SSO for human users second
+- Virtual servers as the RBAC boundary — tools are `visibility=public` by default (set explicitly)
+- Tool namespacing: ContextForge names tools as `<gateway-name>-<tool-name>` (hyphens, not `__`)
+  - e.g. `sre-toolbox-sre-healthcheck` (underscores in tool names converted to hyphens)
+- Custom Python MCP uses `mcp[cli]` + FastMCP SSE transport, AKS pod with ClusterRole read-only access
+- HPA disabled on gateway Deployment: chart has no `{{- if not .Values.hpa.enabled }}` guard on
+  `spec.replicas`, causing Helm SSA conflict with kube-controller-manager; AKS node autoscaler handles capacity
+- `make helm-aks-secrets` always runs `kubectl rollout restart` post-upgrade: chart uses `envFrom`
+  (env snapshotted at container start), so ConfigMap-only changes require a pod restart to take effect
+- SSRF allowlist scoped to cluster CIDRs: `10.1.0.0/16` (service CIDR) + `10.0.0.0/22` (pod subnet)
+- Gateway registration API is at `POST /gateways` — no `/v1/` prefix on any management endpoint
+
+---
+
 
 ### Phase 1 — COMPLETE ✅
 - Docker Compose stack running locally at `http://localhost:4444/admin`
@@ -45,6 +84,8 @@ Full Helm stack deployed to minikube (profile `mcpgw`) on MacBook Pro M1. Confir
 Confirmed 2026-06-30: `curl https://contextforge.gourmandtech.com/health` → `{"status":"healthy"}` with valid Let's Encrypt TLS, TLSv1.3, HTTP/2, HSTS, and production security headers.
 
 **Production URL:** `https://contextforge.gourmandtech.com`
+
+**Node pool:** `system` — autoscaling enabled (min: 2, max: 10), configured 2026-07-02 via Azure Portal after single-node CPU exhaustion when sre-mcp-server was added alongside the gateway.
 
 **IaC files:**
 - `infra/bicep/main.bicep` — subscription-scoped deployment, derives all resource names from params

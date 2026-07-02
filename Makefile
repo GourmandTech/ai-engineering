@@ -9,6 +9,7 @@
 # ─────────────────────────────────────────────────────────────
 RESOURCE_GROUP   ?= rg-contextforge-dev
 AKS_CLUSTER      ?= aks-contextforge-dev
+AKS_NODEPOOL     ?= system
 NAMESPACE        ?= mcp
 HELM_RELEASE     ?= mcp-stack
 HELM_CHART       ?= .contextforge/charts/mcp-stack
@@ -252,6 +253,23 @@ helm-aks-secrets: aks-creds ## Deploy ContextForge to AKS, pulling secrets from 
 	@test -n "$(KV_NAME)" || (echo "Usage: make helm-aks-secrets KV_NAME=kv-contextforge-dev" && exit 1)
 	@echo "WARNING: Deploying to AKS cluster: $(AKS_CLUSTER) with secrets from $(KV_NAME)"
 	@read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
+	@# Remove any stale HPA (HPA is now disabled; chart no longer creates one).
+	kubectl delete hpa -n $(NAMESPACE) --all --ignore-not-found 2>/dev/null || true
+	@# Surgically remove kube-controller-manager's scale managedField entry from the Deployment.
+	@# When HPA was active, kube-controller-manager took SSA ownership of spec.replicas.
+	@# Deleting the HPA does NOT automatically release that ownership — the entry persists
+	@# in the Deployment's managedFields until explicitly removed. Without this, Helm's SSA
+	@# conflicts on spec.replicas even after the HPA is gone.
+	@# kubectl >=1.21 strips managedFields from get output unless --show-managed-fields is set.
+	@MFIDX=$$(kubectl get deployment $(HELM_RELEASE)-mcpgateway -n $(NAMESPACE) --show-managed-fields -o json 2>/dev/null | \
+	  jq -r '[(.metadata.managedFields // []) | to_entries[] | select(.value.manager == "kube-controller-manager" and (.value.subresource // "") == "scale")] | if length > 0 then .[0].key else empty end'); \
+	  if [ -n "$$MFIDX" ]; then \
+	    echo "Removing kube-controller-manager scale managedField at index $$MFIDX"; \
+	    kubectl patch deployment $(HELM_RELEASE)-mcpgateway -n $(NAMESPACE) --type=json \
+	      -p="[{\"op\":\"remove\",\"path\":\"/metadata/managedFields/$$MFIDX\"}]"; \
+	  else \
+	    echo "No stale kube-controller-manager scale managedField found (already clean)"; \
+	  fi
 	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
 	  --namespace $(NAMESPACE) --create-namespace \
 	  --values $(HELM_VALUES) \
@@ -263,6 +281,11 @@ helm-aks-secrets: aks-creds ## Deploy ContextForge to AKS, pulling secrets from 
 	  --set "mcpContextForge.secret.DEFAULT_USER_PASSWORD=$$(az keyvault secret show --vault-name $(KV_NAME) --name default-user-password --query value -o tsv)" \
 	  --set "mcpContextForge.secret.BASIC_AUTH_PASSWORD=$$(az keyvault secret show --vault-name $(KV_NAME) --name basic-auth-password --query value -o tsv)" \
 	  --wait --timeout=10m
+	@# Force pod restart so ConfigMap changes take effect.
+	@# Helm updates the ConfigMap but does NOT roll pods unless the pod template changes.
+	@# The chart has no config-checksum annotation, so envFrom values are stale until restart.
+	kubectl rollout restart deployment/$(HELM_RELEASE)-mcpgateway -n $(NAMESPACE)
+	kubectl rollout status deployment/$(HELM_RELEASE)-mcpgateway -n $(NAMESPACE) --timeout=3m
 	@$(MAKE) aks-status
 
 helm-aks: aks-creds ## Deploy/upgrade ContextForge to AKS (prompts for confirmation)
@@ -280,15 +303,82 @@ helm-aks: aks-creds ## Deploy/upgrade ContextForge to AKS (prompts for confirmat
 # ─────────────────────────────────────────────────────────────
 mcp-status: ## Check all registered MCP servers in the gateway
 	@curl -sf -H "Authorization: Bearer $${JWT_TOKEN:-}" \
-	  http://$(MCP_HOST)/v1/gateways | jq .
+	  http://$(MCP_HOST)/gateways | jq .
 
 mcp-register: ## Register a new MCP server (MCP_NAME and MCP_URL required)
 	@test -n "$(MCP_NAME)" || (echo "Usage: make mcp-register MCP_NAME=myserver MCP_URL=http://..." && exit 1)
 	@test -n "$(MCP_URL)"  || (echo "Usage: make mcp-register MCP_NAME=myserver MCP_URL=http://..." && exit 1)
-	curl -X POST http://$(MCP_HOST)/v1/gateways \
+	curl -X POST http://$(MCP_HOST)/gateways \
 	  -H "Authorization: Bearer $${JWT_TOKEN:-}" \
 	  -H "Content-Type: application/json" \
 	  -d "{\"name\": \"$(MCP_NAME)\", \"url\": \"$(MCP_URL)\"}" | jq .
+
+# ─────────────────────────────────────────────────────────────
+# Phase 4 — Federated MCP
+# ─────────────────────────────────────────────────────────────
+SRE_MCP_IMAGE    ?= sre-mcp-server
+SRE_MCP_TAG      ?= latest
+GATEWAY_URL      ?= https://contextforge.gourmandtech.com
+
+sre-mcp-build: ## Build SRE Toolbox MCP image locally and push to ACR (az acr build/Tasks not permitted on this subscription)
+	$(eval ACR := $(shell az acr list -g $(RESOURCE_GROUP) --query '[0].loginServer' -o tsv))
+	@test -n "$(ACR)" || (echo "ERROR: No ACR found in $(RESOURCE_GROUP)" && exit 1)
+	az acr login --name $(shell echo $(ACR) | cut -d. -f1)
+	docker build --platform linux/amd64 -t $(ACR)/$(SRE_MCP_IMAGE):$(SRE_MCP_TAG) services/sre-mcp-server/
+	docker push $(ACR)/$(SRE_MCP_IMAGE):$(SRE_MCP_TAG)
+	@echo "✓ Pushed: $(ACR)/$(SRE_MCP_IMAGE):$(SRE_MCP_TAG)"
+
+aks-scale: ## Manually scale the system node pool (NODE_COUNT required; autoscaler overrides this when active)
+	az aks nodepool scale \
+	  --resource-group $(RESOURCE_GROUP) \
+	  --cluster-name $(AKS_CLUSTER) \
+	  --name $(AKS_NODEPOOL) \
+	  --node-count $(NODE_COUNT)
+
+sre-mcp-deploy: aks-creds ## Deploy SRE Toolbox MCP server to AKS
+	kubectl apply -f infra/k8s/sre-mcp-server.yaml -n $(NAMESPACE)
+	kubectl rollout status deployment/sre-mcp-server -n $(NAMESPACE) --timeout=3m
+	@echo "✓ sre-mcp-server deployed"
+
+mcp-get-token: ## Get a ContextForge JWT — pulls password from Key Vault (KV_NAME required; set ADMIN_EMAIL or uses KV platform-admin-email)
+	$(eval KV  := $(or $(KV_NAME),kv-contextforge-dev))
+	$(eval EMAIL := $(or $(ADMIN_EMAIL),$(shell az keyvault secret show --vault-name $(KV) --name platform-admin-email --query value -o tsv 2>/dev/null)))
+	$(eval PASS  := $(shell az keyvault secret show --vault-name $(KV) --name platform-admin-password --query value -o tsv 2>/dev/null))
+	@test -n "$(EMAIL)" || (echo "ERROR: Could not resolve admin email from KV or ADMIN_EMAIL" && exit 1)
+	@test -n "$(PASS)"  || (echo "ERROR: Could not read platform-admin-password from $(KV)" && exit 1)
+	@# Endpoint: POST /auth/login — JSON body, email field required (not plain username)
+	@curl -sf -X POST $(GATEWAY_URL)/auth/login \
+	  -H "Content-Type: application/json" \
+	  -d "{\"email\": \"$(EMAIL)\", \"password\": \"$(PASS)\"}" \
+	  | jq -r .access_token
+
+mcp-list-gateways: ## List all registered gateways (JWT_TOKEN required)
+	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first: eval \$$(make mcp-get-token ...)" && exit 1)
+	curl -sf $(GATEWAY_URL)/gateways \
+	  -H "Authorization: Bearer $(JWT_TOKEN)" | jq '[.[] | {name, url, status: .enabled}]'
+
+mcp-list-tools: ## List all federated tools across registered gateways (JWT_TOKEN required)
+	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
+	curl -sf $(GATEWAY_URL)/tools \
+	  -H "Authorization: Bearer $(JWT_TOKEN)" \
+	  | jq '{total: length, names: [.[].name]}'
+
+mcp-register-sre: ## Register SRE Toolbox MCP server in ContextForge (JWT_TOKEN required)
+	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
+	curl -sX POST $(GATEWAY_URL)/gateways \
+	  -H "Authorization: Bearer $(JWT_TOKEN)" \
+	  -H "Content-Type: application/json" \
+	  -d '{"name":"sre-toolbox","url":"http://sre-mcp-server.mcp.svc.cluster.local:8000/sse","transport":"SSE","description":"Custom SRE toolbox — healthchecks, k8s, Azure, Prometheus","tags":["sre","custom","azure","kubernetes"],"visibility":"public"}' \
+	  | jq .
+
+mcp-register-github: ## Register GitHub MCP server (GITHUB_PAT and JWT_TOKEN required)
+	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
+	@test -n "$(GITHUB_PAT)" || (echo "Set GITHUB_PAT first" && exit 1)
+	curl -sX POST $(GATEWAY_URL)/gateways \
+	  -H "Authorization: Bearer $(JWT_TOKEN)" \
+	  -H "Content-Type: application/json" \
+	  -d "{\"name\":\"github-mcp\",\"url\":\"https://api.githubcopilot.com/mcp/\",\"transport\":\"SSE\",\"auth_type\":\"bearer\",\"auth_token\":\"$(GITHUB_PAT)\",\"description\":\"GitHub — repos, PRs, issues, Actions\",\"tags\":[\"github\",\"vcs\",\"ci-cd\"],\"visibility\":\"public\"}" \
+	  | jq .
 
 # ─────────────────────────────────────────────────────────────
 # Quality & Maintenance

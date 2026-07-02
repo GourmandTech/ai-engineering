@@ -19,11 +19,13 @@ mcpContextForge:
   strategy:
     type: Recreate                       # RollingUpdate needs headroom for +1 pod; we don't have it on 1 node
 
+  # HPA disabled: the chart template always renders `spec.replicas` unconditionally
+  # (no {{- if not .Values.mcpContextForge.hpa.enabled }} guard in deployment-mcpgateway.yaml).
+  # When HPA is enabled, kube-controller-manager takes SSA ownership of spec.replicas and
+  # subsequent `helm upgrade` calls fail with a field manager conflict.
+  # Node-level autoscaling (AKS system pool, min:2, max:10) handles capacity instead.
   hpa:
-    enabled: true
-    minReplicas: 1
-    maxReplicas: 3
-    targetCPUUtilizationPercentage: 70
+    enabled: false
 
   # ── Image ──────────────────────────────────────────────────────────────────
   image:
@@ -82,7 +84,14 @@ mcpContextForge:
     ALLOWED_ORIGINS: '["https://contextforge.gourmandtech.com"]'
 
     SSRF_ALLOW_LOCALHOST: "false"
+    # Scope SSRF allowlist to cluster-internal CIDRs only — keeps the rest of RFC 1918 blocked.
+    # 10.1.0.0/16  = AKS service CIDR (ClusterIP range — where svc DNS resolves to)
+    # 10.0.0.0/22  = AKS pod subnet (Azure CNI pod IPs)
+    # Cloud metadata endpoint (169.254.169.254) stays blocked via SSRF_BLOCKED_NETWORKS.
+    # NOTE: changing this requires a pod restart (envFrom snapshots env at container start);
+    #       `make helm-aks-secrets` now runs `kubectl rollout restart` after every upgrade.
     SSRF_ALLOW_PRIVATE_NETWORKS: "false"
+    SSRF_ALLOWED_NETWORKS: '["10.1.0.0/16", "10.0.0.0/22"]'
     SSRF_DNS_FAIL_CLOSED: "false"
 
     # TLS + custom domain — production security headers enabled

@@ -1,0 +1,110 @@
+---
+# SRE Toolbox MCP Server — Kubernetes Deployment + Service
+# Runs inside AKS (mcp namespace) and is registered as a gateway in ContextForge.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sre-mcp-server
+  namespace: mcp
+  labels:
+    app: sre-mcp-server
+    phase: "4"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sre-mcp-server
+  template:
+    metadata:
+      labels:
+        app: sre-mcp-server
+    spec:
+      serviceAccountName: sre-mcp-server
+      containers:
+        - name: sre-mcp-server
+          image: acrcontextforgedev.azurecr.io/sre-mcp-server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: PROMETHEUS_URL
+              value: "http://prometheus-operated.monitoring.svc.cluster.local:9090"
+            - name: GATEWAY_URL
+              value: "https://contextforge.gourmandtech.com"
+            - name: AZURE_SUBSCRIPTION_ID
+              valueFrom:
+                secretKeyRef:
+                  name: azure-config
+                  key: subscription-id
+                  optional: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          livenessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+---
+# ServiceAccount with minimal RBAC (read-only pod/event access)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sre-mcp-server
+  namespace: mcp
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sre-mcp-server-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "events", "namespaces", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sre-mcp-server-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sre-mcp-server-reader
+subjects:
+  - kind: ServiceAccount
+    name: sre-mcp-server
+    namespace: mcp
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sre-mcp-server
+  namespace: mcp
+  labels:
+    app: sre-mcp-server
+spec:
+  selector:
+    app: sre-mcp-server
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+  type: ClusterIP
