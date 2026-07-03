@@ -15,7 +15,7 @@ Phase 4 turns ContextForge from a single gateway into a true **federated MCP hub
 | SRE Toolbox MCP | `services/sre-mcp-server/` (custom Python FastMCP) | SSE | ✅ Running in AKS + registered in ContextForge |
 | GitHub MCP | `github/github-mcp-server` (official, self-hosted) | stdio via `mcpgateway.translate` wrapper | ✅ Running in AKS + registered in ContextForge |
 | Azure DevOps MCP | `microsoft/azure-devops-mcp` (official) | stdio via `mcpgateway.translate` wrapper | ✅ Running in AKS + registered in ContextForge (40 tools) |
-| Kubernetes MCP | `mcp-server-kubernetes` (community) | stdio via wrapper | ⬜ |
+| Kubernetes MCP | `containers/kubernetes-mcp-server` (Red Hat/containers, native SSE — no wrapper) | SSE (native) | ✅ Running in AKS + registered in ContextForge (13 tools) |
 | Prometheus MCP | `mcp-server-prometheus` (community) | stdio via wrapper | ⬜ |
 
 ---
@@ -33,7 +33,7 @@ ContextForge Gateway (https://contextforge.gourmandtech.com)
         │
         ├── GitHub MCP ────────── (SSE → api.github.com)
         ├── Azure DevOps MCP ──── (stdio → dev.azure.com)
-        ├── Kubernetes MCP ─────── (stdio → AKS cluster)
+        ├── Kubernetes MCP ─────── (SSE native → AKS cluster)
         ├── Prometheus MCP ─────── (stdio → /metrics endpoint)
         └── SRE Toolbox MCP ────── (SSE → AKS pod) ✅
 ```
@@ -459,12 +459,104 @@ curl -s $GATEWAY_URL/tools -H "Authorization: Bearer $JWT_TOKEN" \
 
 ## Step 4 — Register Kubernetes MCP Server
 
-```bash
-# The kubernetes MCP server needs kubeconfig access.
-# Deploy in-cluster with a ServiceAccount that has read access.
-kubectl apply -f infra/k8s/kubernetes-mcp-server.yaml -n mcp
+**Status (2026-07-03): COMPLETE ✅.** `make kubernetes-mcp-deploy` applied
+cleanly (pod scheduled, image pulled, RBAC bound) but the container
+CrashLoopBackOff'd 167 times before the root cause was found and fixed — see
+the incident log below. After the fix: pod `1/1 Running`, `0` restarts,
+registered with `status: active`, `reachable: true`, 13 tools federated.
 
-# Register
+### Server choice: `containers/kubernetes-mcp-server`, not `Flux159/mcp-server-kubernetes`
+
+Flux159/mcp-server-kubernetes is the more widely-known community option (npm,
+~20k weekly downloads) but was ruled out for a concrete reason:
+**CVE-2026-46519** (CVSS 8.8, fixed upstream in v3.6.0) — the environment
+variables operators use to restrict its tool access
+(`ALLOW_ONLY_READONLY_TOOLS`, `ALLOW_ONLY_NON_DESTRUCTIVE_TOOLS`,
+`ALLOWED_TOOLS`) were enforced at the `tools/list` discovery layer but not at
+`tools/call` execution — any client that knew a tool name could invoke it
+directly regardless of the configured read-only mode. It also shells out to
+bundled `kubectl`/`helm` binaries as subprocesses rather than talking to the
+API directly.
+
+`containers/kubernetes-mcp-server` (Go, maintained by Red Hat under the
+`containers` GitHub org, supports both Kubernetes and OpenShift) was chosen
+instead: it's a native `client-go` implementation (no shelled-out binaries),
+its `--read-only` flag is enforced by only exposing tools annotated
+`readOnlyHint=true` (no discovery/execution split to exploit), and it
+natively serves Streamable HTTP + SSE — which changes the shape of this step
+relative to Steps 2-3, covered next.
+
+### Architecture — three deliberate deviations from the Step 2-3 pattern
+
+1. **No `mcpgateway.translate` stdio→SSE wrapper.** GitHub's and Azure
+   DevOps's upstream binaries are stdio-only, which is why Steps 2-3 needed
+   the wrapper. `containers/kubernetes-mcp-server` natively serves
+   Streamable HTTP (`/mcp`) and SSE (`/sse`) when started with `--port`
+   (confirmed from `docs/configuration.md`'s CLI options table, not
+   inferred) — so this server is registered directly, no bridge process,
+   no `services/kubernetes-mcp-wrapper/` directory.
+2. **No Key Vault CSI / workload identity.** This server holds no external
+   credential. It authenticates to the AKS API server using its own
+   ServiceAccount's automounted token via `client-go`'s in-cluster config,
+   auto-detected on startup (confirmed from the upstream "Cross-Cluster
+   Access from a Pod" doc). Least privilege is enforced entirely by
+   Kubernetes RBAC (the built-in `view` ClusterRole) plus the app-layer
+   `--read-only` flag — two independent, redundant layers, see the
+   manifest's header comment for the full reasoning.
+3. **No image to build.** Deployed straight from the upstream public image,
+   `quay.io/containers/kubernetes_mcp_server:v0.0.63` (note: underscored
+   repository name, not the hyphenated repo name — easy typo) — pinned to
+   the latest tagged release as of 2026-07-02, not `latest`. No
+   `make kubernetes-mcp-build` target exists because there's nothing to
+   build; `make bicep-deploy` is not a prerequisite either, since no Azure
+   identity is involved.
+
+**RBAC scope:** cluster-wide via the built-in `view` ClusterRole (the
+upstream-recommended "Option A" in `docs/getting-started-kubernetes.md`),
+not the namespace-scoped "Option B" — this tool's job (inventory table: "pod
+health, deployments, logs") is cluster-wide AKS observability, not
+single-namespace introspection. `view` already excludes Secret *data* by
+Kubernetes's own design, which is the authoritative backstop even if the
+app-layer `--read-only` flag were ever misconfigured.
+
+**Network egress ended up narrower than Steps 2-3, but not for the reason
+originally assumed** (see incident log below) — GitHub MCP and Azure DevOps
+MCP both need broad public internet egress (`api.github.com`,
+`dev.azure.com`); this server needs exactly one specific public IP for the
+Kubernetes API server, plus cluster DNS. No `0.0.0.0/0` rule at all —
+narrower than Step 2/3's `except RFC1918` blocks, because we could pin to
+the one real address this workload needs instead of an entire public range.
+
+**Toolsets:** `core,config` — deliberately excludes the default `helm`
+toolset, since this deployment has no Helm-release-inspection use case.
+Same reasoning Step 3 used to drop the `repositories` domain from Azure
+DevOps MCP: don't expose a capability surface nothing here will use.
+
+### Deploy and register
+
+```bash
+# No build step, no bicep-deploy prerequisite — see architecture notes above
+make kubernetes-mcp-deploy
+
+# Confirm the pod is Running and RBAC is scoped correctly
+kubectl get pods -n mcp -l app=kubernetes-mcp-server
+kubectl auth can-i list pods --as=system:serviceaccount:mcp:kubernetes-mcp-server --all-namespaces    # expect: yes
+kubectl auth can-i delete pods --as=system:serviceaccount:mcp:kubernetes-mcp-server --all-namespaces  # expect: no
+kubectl auth can-i get secrets --as=system:serviceaccount:mcp:kubernetes-mcp-server --all-namespaces  # expect: no (view excludes Secret data)
+
+# Register with ContextForge — no credential to hide (see architecture
+# notes above), this call only tells the gateway the in-cluster SSE URL
+export JWT_TOKEN=$(make mcp-get-token)
+make mcp-register-kubernetes JWT_TOKEN=$JWT_TOKEN
+
+# Verify
+make mcp-list-gateways JWT_TOKEN=$JWT_TOKEN
+make mcp-list-tools JWT_TOKEN=$JWT_TOKEN
+```
+
+Equivalent direct `curl` for registration, for reference:
+
+```bash
 curl -sX POST $GATEWAY_URL/gateways \
   -H "Authorization: Bearer $JWT_TOKEN" \
   -H "Content-Type: application/json" \
@@ -472,11 +564,123 @@ curl -sX POST $GATEWAY_URL/gateways \
     "name": "kubernetes-mcp",
     "url": "http://kubernetes-mcp-server.mcp.svc.cluster.local:8000/sse",
     "transport": "SSE",
-    "description": "Kubernetes — pod health, deployments, logs (read-only)",
+    "description": "Kubernetes — pod health, deployments, logs, generic resources (read-only, view ClusterRole, in-cluster AKS API access only)",
     "tags": ["kubernetes", "aks", "observability", "sre"],
     "visibility": "public"
   }' | jq .
 ```
+
+**Files added for this step:**
+- `infra/k8s/kubernetes-mcp-server.yaml` — Deployment (upstream image,
+  no wrapper), ServiceAccount (default automount, unlike the ADO/GitHub
+  ServiceAccounts which explicitly disable it), ClusterRoleBinding to the
+  built-in `view` role, Service, NetworkPolicy (corrected apiserver egress,
+  see incident below).
+- `Makefile` — `kubernetes-mcp-deploy` and `mcp-register-kubernetes` targets.
+  No `-build` target (nothing to build).
+
+### Incident: CrashLoopBackOff, 167 restarts, `dial tcp 10.1.0.1:443: i/o timeout` (2026-07-03)
+
+First `make kubernetes-mcp-deploy` scheduled the pod fine (image pulled, RBAC
+bound, no security-context conflicts — `runAsNonRoot` was satisfied by the
+image's own built-in UID 65532 with no override needed) but the container
+never went Ready. `kubectl logs --previous` showed the same client-go
+discovery error on every attempt:
+
+```
+E0703 15:08:42.410510 1 memcache.go:265] "Unhandled Error" err="couldn't get
+current server API group list: Get \"https://kubernetes.default.svc/api\":
+dial tcp 10.1.0.1:443: i/o timeout" logger="UnhandledError"
+```
+
+DNS resolution succeeded (`kubernetes.default.svc` → `10.1.0.1`, so the
+port-53 egress rule was working) but the TCP dial to `10.1.0.1:443` timed
+out — a silent drop, not a refusal, which pointed at NetworkPolicy rather
+than RBAC or the app itself.
+
+**Root cause:** the original NetworkPolicy scoped apiserver egress to the AKS
+service CIDR (`10.1.0.0/16`) on the assumption that `kubernetes.default.svc`
+was reachable as ordinary in-cluster/VNet traffic — the same assumption
+implicit in this project's own `CLAUDE.md` SSRF-allowlist note about this
+cluster. That assumption was wrong for *this* cluster specifically: it
+doesn't use AKS API Server VNet Integration, so the control plane isn't in
+the VNet at all. `kubectl get endpoints kubernetes -n default -o wide`
+confirmed the Service's real backend is a public Azure IP
+(`4.157.231.123:443`), not anything in the service or pod CIDR. kube-proxy
+DNATs the ClusterIP (`10.1.0.1`) that client-go dials to that public IP —
+a NetworkPolicy scoped only to the service CIDR never had a chance of
+matching the actual destination.
+
+Confirmed empirically before touching the manifest, not just theorized: with
+the NetworkPolicy deleted entirely, the pod would be expected to reach
+Ready (not re-tested after the real fix landed, since the point was to
+isolate NetworkPolicy as the cause, which the endpoints lookup already
+did more precisely).
+
+**General lesson, worth remembering for anything future that needs
+in-cluster API access (this project or otherwise):** on a non-VNet-integrated
+managed Kubernetes control plane (this is not AKS-specific — same caveat
+applies to EKS/GKE without their equivalent private-endpoint features),
+reaching `kubernetes.default.svc` from a pod is real internet egress to a
+specific, provider-owned IP, architecturally identical to reaching any other
+external API — not intra-cluster traffic. Don't assume the apiserver is
+inside the service/pod CIDR just because its ClusterIP is; verify with
+`kubectl get endpoints kubernetes -n default -o wide` before writing the
+NetworkPolicy, not after a crash loop surfaces the wrong assumption.
+
+**Fixed:** `infra/k8s/kubernetes-mcp-server.yaml`'s egress rule now targets
+`4.157.231.123/32:443` (the verified real endpoint) instead of
+`10.1.0.0/16:443`. **Caveat carried forward in the manifest's own comments:**
+Azure could in principle rotate this public frontend IP (cluster upgrade,
+backend migration, etc.), which would silently reproduce the identical
+failure signature. If this pod ever crash-loops again with the same
+`dial tcp ...:443: i/o timeout` message, re-run the `get endpoints` command
+first and diff against the manifest's `/32` before assuming anything else
+changed.
+
+**Re-deploy after the fix — confirmed working 2026-07-03:** pod
+`1/1 Running`, `0` restarts (stable for 29+ minutes, vs. 167 restarts
+before), registered with `status: active`, `reachable: true`, 13 tools
+federated.
+
+```bash
+kubectl apply -f infra/k8s/kubernetes-mcp-server.yaml -n mcp   # picks up the corrected NetworkPolicy
+kubectl rollout restart deployment/kubernetes-mcp-server -n mcp
+kubectl get pods -n mcp -l app=kubernetes-mcp-server -w        # expect 1/1 Running
+kubectl auth can-i list pods --as=system:serviceaccount:mcp:kubernetes-mcp-server --all-namespaces
+export JWT_TOKEN=$(make mcp-get-token)
+make mcp-register-kubernetes JWT_TOKEN=$JWT_TOKEN
+make mcp-list-tools JWT_TOKEN=$JWT_TOKEN
+```
+
+**RBAC verification (2026-07-03):** all three checks matched expectations —
+`list pods` → `yes`, `delete pods` → `no`, `get secrets` → `no`. The `delete`
+and `get secrets` checks came back as `"no - Azure does not have opinion for
+this user"` rather than a bare `no` — this cluster has Azure RBAC for
+Kubernetes enabled (`enableAzureRBAC: true` in `aks.bicep`), so `auth can-i`
+checks for an Azure role assignment first; since this ServiceAccount was
+deliberately never given one (only the native `view` ClusterRoleBinding),
+Azure RBAC "has no opinion" and falls through to standard Kubernetes RBAC,
+which then correctly evaluates and denies both. Expected behavior on this
+cluster, not a gap.
+
+**Confirmed federated tool names** (13, `kubernetes-mcp-<tool-name>`,
+underscores converted to hyphens — matches the `--toolsets=core,config`
+scope chosen above):
+`kubernetes-mcp-resources-list`, `kubernetes-mcp-resources-get`,
+`kubernetes-mcp-pods-top`, `kubernetes-mcp-pods-log`,
+`kubernetes-mcp-pods-list-in-namespace`, `kubernetes-mcp-pods-list`,
+`kubernetes-mcp-pods-get`, `kubernetes-mcp-nodes-top`,
+`kubernetes-mcp-nodes-stats-summary`, `kubernetes-mcp-nodes-log`,
+`kubernetes-mcp-namespaces-list`, `kubernetes-mcp-events-list`,
+`kubernetes-mcp-configuration-view`.
+
+Note: the `POST /gateways` registration response itself showed
+`"toolCount": 0` at the instant of creation — tool discovery runs
+asynchronously right after registration, and `make mcp-list-tools` (run
+immediately after in the same sequence) already showed all 13, so this is
+expected timing, not a discovery failure — same as it would be for any
+other gateway registered here.
 
 ---
 

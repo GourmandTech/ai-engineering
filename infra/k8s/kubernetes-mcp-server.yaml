@@ -1,0 +1,266 @@
+---
+# Kubernetes MCP Server — Kubernetes Deployment + Service
+# Runs inside AKS (mcp namespace), registered as a gateway in ContextForge.
+#
+# Architecture decision: deviates from the Steps 2-3 pattern on purpose.
+#
+#   1. No mcpgateway.translate stdio->SSE wrapper, no services/ build dir.
+#      containers/kubernetes-mcp-server (Go, Red Hat/containers org) natively
+#      serves Streamable HTTP (/mcp) and SSE (/sse) when started with --port —
+#      confirmed from docs/configuration.md's `port` field ("starts the MCP
+#      server in HTTP mode") and the CLI options table, not inferred. GitHub's
+#      and Azure DevOps's upstream binaries are stdio-only; this one isn't, so
+#      the wrapper step Steps 2-3 needed simply doesn't apply here.
+#   2. No Azure Key Vault CSI / workload identity. This server doesn't hold an
+#      external credential at all — it talks to the AKS API server using its
+#      own ServiceAccount's automounted token (client-go in-cluster config,
+#      auto-detected — confirmed from docs/configuration.md's "Cross-Cluster
+#      Access from a Pod" section: "the server automatically detects the
+#      in-cluster environment"). Contrast with azure-devops-mcp-server.yaml,
+#      which deliberately sets `automountServiceAccountToken: false` because
+#      it never talks to the k8s API — this one deliberately leaves it on
+#      because that's its only auth mechanism.
+#   3. No custom image to build/push to ACR. Deployed directly from the
+#      upstream public image (quay.io/containers/kubernetes_mcp_server) —
+#      note the underscored repository name, easy to typo as the hyphenated
+#      repo name. Pinned to v0.0.63 (github.com/containers/kubernetes-mcp-server
+#      /releases/latest as of 2026-07-02), not `latest`, matching this
+#      project's version-pinning convention elsewhere (github-mcp-server
+#      v1.0.4, azure-devops-mcp v2.7.0). ContextForge itself already pulls its
+#      own image (ghcr.io/ibm/mcp-context-forge) directly from a public
+#      registry without an ACR mirror step, so this isn't a new pattern for
+#      the project — just the first per-MCP-server manifest to use it.
+#
+# Least privilege, defense in depth (two independent, redundant layers):
+#   - App layer:  --read-only flag (server only exposes readOnlyHint=true
+#     tools; verified against docs/configuration.md's CLI options table).
+#   - RBAC layer: ServiceAccount bound to the built-in `view` ClusterRole,
+#     which is authoritative and unbypassable at the API server itself —
+#     even if the app-layer flag were ever misconfigured or bypassed (see
+#     CVE-2026-46519 below), the ServiceAccount's own token still can't
+#     write anything. `view` also explicitly excludes Secret *data* (can
+#     list Secret names/metadata, can't read values) — a built-in Kubernetes
+#     safety property, not something this manifest has to configure.
+#
+# Chose this project (containers/kubernetes-mcp-server) over the older,
+# more widely-known Flux159/mcp-server-kubernetes (Node, wraps the kubectl
+# and helm binaries as subprocesses) for two concrete reasons, not just
+# preference: (1) CVE-2026-46519 (CVSS 8.8, fixed upstream in v3.6.0) — the
+# env vars operators use to restrict Flux159's tool access were enforced at
+# tools/list (discovery) but not tools/call (execution), so any client that
+# guessed a tool name could invoke it regardless of the configured
+# read-only/allowlist mode; (2) this project talks to the Kubernetes API
+# directly via client-go rather than shelling out to a bundled kubectl/helm
+# binary, which is a smaller attack surface and doesn't require bundling
+# extra binaries into the image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubernetes-mcp-server
+  namespace: mcp
+  labels:
+    app: kubernetes-mcp-server
+    phase: "4"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubernetes-mcp-server
+  template:
+    metadata:
+      labels:
+        app: kubernetes-mcp-server
+    spec:
+      serviceAccountName: kubernetes-mcp-server
+      containers:
+        - name: kubernetes-mcp-server
+          image: quay.io/containers/kubernetes_mcp_server:v0.0.63
+          imagePullPolicy: IfNotPresent
+          args:
+            - --port=8000
+            - --read-only
+            - --toolsets=core,config
+            - --stateless
+            - --list-output=yaml
+          # --toolsets=core,config deliberately excludes the default `helm`
+          # toolset — this deployment has no need to inspect Helm releases,
+          # and dropping unused toolsets follows the same reasoning Step 3
+          # used to drop the `repositories` domain from Azure DevOps MCP:
+          # don't expose a capability surface nothing here is going to use.
+          ports:
+            - containerPort: 8000
+              name: http
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          # /healthz confirmed from the upstream Helm chart's own
+          # livenessProbe/readinessProbe defaults (charts/kubernetes-mcp-server
+          # /README.md) — more precise than the tcpSocket probes used on the
+          # stdio-wrapped servers, since this binary exposes a real HTTP
+          # health endpoint.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          volumeMounts:
+            # Required because of readOnlyRootFilesystem: true above — mirrors
+            # the upstream Helm chart's own note that the main container gets
+            # a /tmp emptyDir mount by default (sidecars don't inherit it,
+            # which doesn't apply here since this Deployment has none).
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        runAsNonRoot: true
+      # No `runAsUser` pin (contrast with azure-devops-mcp-server.yaml's
+      # explicit 1001): this is the upstream maintainers' own image, not a
+      # custom-built one with a UID conflict to work around — runAsNonRoot
+      # alone enforces the image's own built-in non-root user.
+---
+# ServiceAccount — this workload's *only* credential is its own automounted
+# token, used for in-cluster K8s API access (client-go in-cluster config).
+# automountServiceAccountToken is deliberately left at its default (true) —
+# the opposite choice from azure-devops-mcp-server.yaml, which turns it off
+# because that workload never talks to the k8s API at all.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubernetes-mcp-server
+  namespace: mcp
+---
+# Cluster-wide read access via the built-in `view` ClusterRole — the
+# upstream-recommended pattern (docs/getting-started-kubernetes.md, "Option
+# A: Cluster-Wide Read-Only"), chosen over the namespace-scoped alternative
+# (Option B) because this tool's stated job (inventory table: "pod health,
+# deployments, logs") is cluster-wide AKS observability, not single-namespace
+# introspection. `view` already excludes Secret data by design; see the
+# Deployment's header comment for why this is treated as defense in depth
+# alongside --read-only, not a redundant substitute for it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubernetes-mcp-server-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+subjects:
+  - kind: ServiceAccount
+    name: kubernetes-mcp-server
+    namespace: mcp
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubernetes-mcp-server
+  namespace: mcp
+  labels:
+    app: kubernetes-mcp-server
+spec:
+  selector:
+    app: kubernetes-mcp-server
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+  type: ClusterIP
+---
+# NetworkPolicy egress to the apiserver — CORRECTED 2026-07-03 after a real
+# CrashLoopBackOff (see runbook Step 4 incident log for the full writeup).
+#
+# The original version of this policy scoped apiserver egress to the AKS
+# service CIDR (10.1.0.0/16), on the assumption that `kubernetes.default.svc`
+# was reachable as ordinary in-cluster/VNet traffic. That assumption was
+# wrong: this cluster does NOT use AKS API Server VNet Integration, so the
+# control plane isn't in the VNet at all — it's hosted outside it and
+# reached over the public path. `kubectl get endpoints kubernetes -n default`
+# confirmed the Service's real backend is a public Azure IP (4.157.231.123),
+# not anything in the service or pod CIDR. The ClusterIP (10.1.0.1) that
+# client-go dials is DNAT'd to that public IP by kube-proxy — a NetworkPolicy
+# scoped only to 10.1.0.0/16 never had a chance of matching the real
+# destination, and the pod's own client-go discovery calls timed out on
+# every single start (`dial tcp 10.1.0.1:443: i/o timeout` in the container
+# logs — 167 restarts before this was caught).
+#
+# So: reaching "the apiserver" from a pod on *this* cluster is architecturally
+# identical to github-mcp-server reaching api.github.com or
+# azure-devops-mcp-server reaching dev.azure.com — real internet egress to a
+# specific public IP, not intra-cluster traffic. This policy's egress rule
+# below reflects that: a /32 for the verified real endpoint IP, not a
+# same-namespace/service-CIDR assumption. Still narrower than the Step 2/3
+# policies' `0.0.0.0/0 except RFC1918` — we have the one exact IP this
+# workload needs, so we allow only that.
+#
+# Caveat worth knowing if this ever breaks again: Azure could in principle
+# rotate the control plane's public frontend IP (cluster upgrade, backend
+# migration, etc.), which would silently reproduce this exact failure mode.
+# If `kubernetes-mcp-server` starts crash-looping with the same
+# `dial tcp ...:443: i/o timeout` signature again, re-run
+# `kubectl get endpoints kubernetes -n default -o wide` first and diff
+# against the /32 below before assuming anything else changed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kubernetes-mcp-server
+  namespace: mcp
+spec:
+  podSelector:
+    matchLabels:
+      app: kubernetes-mcp-server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Same ingress source/label as github-mcp-server / azure-devops-mcp-server
+    # — verified against the live gateway pod in Step 2
+    # (app=mcp-stack-mcpgateway, the plain Helm release-name label).
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app: mcp-stack-mcpgateway
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Kubernetes API server — the REAL backend IP, verified 2026-07-03 via
+    # `kubectl get endpoints kubernetes -n default -o wide` (4.157.231.123),
+    # not the 10.1.0.0/16 service CIDR the first version of this rule used.
+    # See this NetworkPolicy's header comment for the full incident writeup.
+    - to:
+        - ipBlock:
+            cidr: 4.157.231.123/32
+      ports:
+        - protocol: TCP
+          port: 443

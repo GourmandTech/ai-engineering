@@ -4,7 +4,8 @@
         mcp-register mcp-status port-forward \
         sre-mcp-build sre-mcp-deploy github-mcp-build github-mcp-deploy \
         azure-devops-mcp-build azure-devops-mcp-deploy \
-        mcp-get-token mcp-list-gateways mcp-list-tools mcp-register-sre mcp-register-github mcp-register-azure-devops \
+        kubernetes-mcp-deploy \
+        mcp-get-token mcp-list-gateways mcp-list-tools mcp-register-sre mcp-register-github mcp-register-azure-devops mcp-register-kubernetes \
         lint clean
 
 # ─────────────────────────────────────────────────────────────
@@ -331,6 +332,9 @@ GITHUB_MCP_IMAGE ?= github-mcp-server
 GITHUB_MCP_TAG   ?= latest
 AZURE_DEVOPS_MCP_IMAGE ?= azure-devops-mcp-server
 AZURE_DEVOPS_MCP_TAG   ?= latest
+# No build vars for Kubernetes MCP — deployed straight from the upstream
+# public image (quay.io/containers/kubernetes_mcp_server), no wrapper to
+# build/push to ACR. See infra/k8s/kubernetes-mcp-server.yaml header.
 GATEWAY_URL      ?= https://contextforge.gourmandtech.com
 
 sre-mcp-build: ## Build SRE Toolbox MCP image locally and push to ACR (az acr build/Tasks not permitted on this subscription)
@@ -413,6 +417,13 @@ azure-devops-mcp-deploy: aks-creds ## Deploy self-hosted Azure DevOps MCP server
 	@echo "✓ azure-devops-mcp-server deployed"
 	@echo "  Verify the PAT synced: kubectl get secret azure-devops-mcp-secrets -n $(NAMESPACE) -o jsonpath='{.data.PERSONAL_ACCESS_TOKEN}' | base64 -d | wc -c"
 
+kubernetes-mcp-deploy: aks-creds ## Deploy Kubernetes MCP server to AKS (no build step — deploys the upstream quay.io image directly, no bicep-deploy prerequisite either — no Azure credential involved)
+	kubectl apply -f infra/k8s/kubernetes-mcp-server.yaml -n $(NAMESPACE)
+	kubectl rollout status deployment/kubernetes-mcp-server -n $(NAMESPACE) --timeout=3m
+	@echo "✓ kubernetes-mcp-server deployed"
+	@echo "  Verify RBAC: kubectl auth can-i list pods --as=system:serviceaccount:$(NAMESPACE):kubernetes-mcp-server --all-namespaces  (expect 'yes')"
+	@echo "  Verify RBAC is read-only: kubectl auth can-i delete pods --as=system:serviceaccount:$(NAMESPACE):kubernetes-mcp-server --all-namespaces  (expect 'no')"
+
 mcp-get-token: ## Get a ContextForge JWT — pulls password from Key Vault (KV_NAME required; set ADMIN_EMAIL or uses KV platform-admin-email)
 	$(eval KV  := $(or $(KV_NAME),kv-contextforge-dev))
 	$(eval EMAIL := $(or $(ADMIN_EMAIL),$(shell az keyvault secret show --vault-name $(KV) --name platform-admin-email --query value -o tsv 2>/dev/null)))
@@ -465,6 +476,14 @@ mcp-register-azure-devops: ## Register self-hosted Azure DevOps MCP gateway (JWT
 	  -H "Authorization: Bearer $(JWT_TOKEN)" \
 	  -H "Content-Type: application/json" \
 	  -d '{"name":"azure-devops-mcp","url":"http://azure-devops-mcp-server.mcp.svc.cluster.local:8000/sse","transport":"SSE","description":"Azure DevOps — pipelines, releases, work items, boards (self-hosted, in-cluster; repositories domain excluded, source lives in GitHub)","tags":["azure","devops","ci-cd","iac"],"visibility":"public"}' \
+	  | jq .
+
+mcp-register-kubernetes: ## Register Kubernetes MCP gateway (JWT_TOKEN required — no credential to hide, this workload auths via its own in-cluster ServiceAccount token)
+	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
+	curl -sX POST $(GATEWAY_URL)/gateways \
+	  -H "Authorization: Bearer $(JWT_TOKEN)" \
+	  -H "Content-Type: application/json" \
+	  -d '{"name":"kubernetes-mcp","url":"http://kubernetes-mcp-server.mcp.svc.cluster.local:8000/sse","transport":"SSE","description":"Kubernetes — pod health, deployments, logs, generic resources (read-only, view ClusterRole, in-cluster AKS API access only)","tags":["kubernetes","aks","observability","sre"],"visibility":"public"}' \
 	  | jq .
 
 # ─────────────────────────────────────────────────────────────
