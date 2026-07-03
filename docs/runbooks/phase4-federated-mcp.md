@@ -16,7 +16,7 @@ Phase 4 turns ContextForge from a single gateway into a true **federated MCP hub
 | GitHub MCP | `github/github-mcp-server` (official, self-hosted) | stdio via `mcpgateway.translate` wrapper | ✅ Running in AKS + registered in ContextForge |
 | Azure DevOps MCP | `microsoft/azure-devops-mcp` (official) | stdio via `mcpgateway.translate` wrapper | ✅ Running in AKS + registered in ContextForge (40 tools) |
 | Kubernetes MCP | `containers/kubernetes-mcp-server` (Red Hat/containers, native SSE — no wrapper) | SSE (native) | ✅ Running in AKS + registered in ContextForge (13 tools) |
-| Prometheus MCP | `mcp-server-prometheus` (community) | stdio via wrapper | ⬜ |
+| Prometheus MCP | `pab1it0/prometheus-mcp-server` (community, native SSE — no wrapper) | SSE (native) | 🔄 kube-prometheus-stack installed, ServiceAccount manifest bug found+fixed (Step 5) — re-deploy + registration pending |
 
 ---
 
@@ -34,7 +34,7 @@ ContextForge Gateway (https://contextforge.gourmandtech.com)
         ├── GitHub MCP ────────── (SSE → api.github.com)
         ├── Azure DevOps MCP ──── (stdio → dev.azure.com)
         ├── Kubernetes MCP ─────── (SSE native → AKS cluster)
-        ├── Prometheus MCP ─────── (stdio → /metrics endpoint)
+        ├── Prometheus MCP ─────── (SSE native → in-cluster /metrics)
         └── SRE Toolbox MCP ────── (SSE → AKS pod) ✅
 ```
 
@@ -686,10 +686,205 @@ other gateway registered here.
 
 ## Step 5 — Register Prometheus MCP Server
 
-```bash
-# Assumes Prometheus is running in the cluster (or use Azure Monitor endpoint)
-kubectl apply -f infra/k8s/prometheus-mcp-server.yaml -n mcp
+**Status (2026-07-03): COMPLETE ✅.** Pod `1/1 Running`, registered in
+ContextForge — `status: active`, `reachable: true`, 6 tools federated
+(matches the local prediction exactly). Two real bugs hit and fixed along
+the way — see the incident logs below. The prerequisite check below turned
+out to be a real gap: `kubectl
+get svc -n monitoring | grep prometheus-operated` came back empty, confirming
+kube-prometheus-stack was never installed. Installed via `helm install
+kube-prom prometheus-community/kube-prometheus-stack -n monitoring
+--create-namespace` — confirmed `svc/prometheus-operated` (ClusterIP: None,
+`9090/TCP`) now exists in the `monitoring` namespace, exactly matching the
+Service-naming assumption this runbook made below (the CR is named
+`prometheus`, not `kube-prom`-prefixed, for this specific object).
 
+### Incident: `make prometheus-mcp-deploy` failed on the ServiceAccount object
+
+`kubectl apply` created the Deployment, Service, and NetworkPolicy
+successfully but rejected the ServiceAccount:
+
+```
+Error from server (BadRequest): error when creating
+"infra/k8s/prometheus-mcp-server.yaml": ServiceAccount in version "v1"
+cannot be handled as a ServiceAccount: strict decoding error: unknown field
+"metadata.automountServiceAccountToken"
+```
+
+**Root cause:** `automountServiceAccountToken` is a top-level field on the
+`ServiceAccount` object, a sibling of `apiVersion`/`kind`/`metadata` — not a
+field nested inside `metadata`. The manifest as originally drafted put it
+under `metadata:`, which is invalid under the API server's strict decoding
+(confirmed against `azure-devops-mcp-server.yaml`'s ServiceAccount, which
+has always had this field placed correctly at the top level — the working
+reference was sitting in the same repo the whole time). This slipped past
+this runbook's own YAML validation because a `yaml.safe_load` pass only
+checks that the file parses as YAML, not that each document matches its
+Kubernetes API schema — syntactically valid, semantically wrong.
+
+**Fixed:** moved `automountServiceAccountToken: false` out from under
+`metadata:` to the ServiceAccount document's top level in
+`infra/k8s/prometheus-mcp-server.yaml`. Since the Deployment/Service/
+NetworkPolicy already applied cleanly before this error, `kubectl apply` is
+safe to re-run — it will patch in the corrected ServiceAccount without
+touching the three resources that already succeeded.
+
+### Incident: `ImagePullBackOff` on re-deploy, once the ServiceAccount fix landed
+
+`make prometheus-mcp-deploy` re-applied cleanly (`serviceaccount/
+prometheus-mcp-server created`, the other three resources `unchanged`), but
+`kubectl rollout status` timed out at 3m and the pod sat in
+`ImagePullBackOff`:
+
+```
+NAME                                     READY   STATUS             RESTARTS   AGE
+prometheus-mcp-server-677f64654d-l5xjz   0/1     ImagePullBackOff   0          50s
+```
+
+**Root cause:** the manifest pinned `ghcr.io/pab1it0/prometheus-mcp-server:
+v1.6.1` — a `v`-prefixed tag that doesn't exist on GHCR. This project's other
+pinned third-party images (`quay.io/containers/kubernetes_mcp_server:
+v0.0.63`) do use a `v` prefix, and that convention was pattern-matched onto
+this image without independently checking pab1it0/prometheus-mcp-server's
+own tag list. Checked against the live GHCR package page
+(`github.com/pab1it0/prometheus-mcp-server/pkgs/container/
+prometheus-mcp-server`) after the failure: published tags are `1.6.1`,
+`1.6.0`, `1.5.3`, `1.5.2`, `1.5.1`, `latest` — none `v`-prefixed. Exactly the
+class of gap this section's own header comment already warned about
+(verify a pin against the published artifact, not by analogy with another
+image's convention) — the warning was written before the tag was actually
+checked against the registry, and the untested guess turned out wrong.
+
+**Fixed:** `infra/k8s/prometheus-mcp-server.yaml`'s image now reads
+`ghcr.io/pab1it0/prometheus-mcp-server:1.6.1` (no `v`).
+
+**Re-deploy after both fixes:**
+
+```bash
+make prometheus-mcp-deploy
+kubectl get pods -n mcp -l app=prometheus-mcp-server -w
+kubectl logs -n mcp deploy/prometheus-mcp-server | grep -i prometheus
+```
+
+### Prerequisite: Prometheus running in-cluster — CONFIRMED 2026-07-03 ✅
+
+This server is a thin PromQL client — it has nothing to talk to unless a
+real Prometheus is already deployed. The prerequisite check below caught a
+real gap: `kubectl get svc -n monitoring | grep prometheus-operated` came
+back empty before this, confirming kube-prometheus-stack had never been
+installed on this cluster — only the ContextForge chart's *in-app* metrics
+were on, and the ServiceMonitor CRD object had been left off because those
+CRDs didn't exist yet.
+
+**Resolved:** installed via
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+helm install kube-prom prometheus-community/kube-prometheus-stack \
+  -n monitoring --create-namespace
+```
+
+Confirmed afterward: `svc/prometheus-operated` (ClusterIP: None, `9090/TCP`)
+now exists in the `monitoring` namespace, exactly matching this runbook's
+naming assumption — the Prometheus Operator names the query-side Service
+`<prometheus-CR-name>-operated`, and for the default kube-prometheus-stack
+chart values that CR is named `prometheus` (not `kube-prom`-prefixed, even
+though that's the Helm *release* name) — giving
+`prometheus-operated.monitoring.svc.cluster.local:9090`, the same URL
+`services/sre-mcp-server/server.py`'s `PROMETHEUS_URL` default already
+assumed. Worth knowing this held on the first real try rather than assuming
+it always will: a different chart version or custom `prometheus.name`
+value could still produce a different Service name on some future
+redeploy — re-check with `kubectl get svc -n monitoring` if this ever needs
+to be rebuilt from scratch.
+
+ContextForge's own ServiceMonitor is also already re-enabled
+(`mcpContextForge.metrics.serviceMonitor.enabled: true` in
+`infra/helm/values.azure.yaml`, confirmed live via `helm status mcp-stack -n
+mcp` showing a `v1/ServiceMonitor` resource for `mcp-stack-mcpgateway`) — no
+further action needed there.
+
+### Server choice: `pab1it0/prometheus-mcp-server`
+
+Chosen over `giantswarm/mcp-prometheus`, `freepik-company/prometheus-mcp`,
+and the AWS-managed-Prometheus-specific `awslabs` server: it's the most
+widely adopted general-purpose option, ships an official multi-arch image
+on GHCR plus its own Helm chart (a second source of truth for the
+Deployment shape, cross-checked against `charts/prometheus-mcp-server/
+values.yaml`), supports `stdio`/`http`/`sse` transport natively via
+`PROMETHEUS_MCP_SERVER_TRANSPORT`, and exposes a real HTTP `/health`
+endpoint (confirmed from the project's own Dockerfile `HEALTHCHECK`
+instruction) rather than requiring a `tcpSocket`-only probe.
+
+Like Kubernetes MCP (Step 4), this deploys straight from the upstream
+public image — no `services/prometheus-mcp-wrapper/` directory, no ACR
+build step, no `mcpgateway.translate` bridge (the binary natively serves SSE
+via `PROMETHEUS_MCP_SERVER_TRANSPORT=sse`). Pinned to `v1.6.1`
+(`pyproject.toml`'s version on the `main` branch as of 2026-07-03) rather
+than `latest` — **confirm this tag actually exists on
+`ghcr.io/pab1it0/prometheus-mcp-server` before applying**
+(`docker manifest inspect ghcr.io/pab1it0/prometheus-mcp-server:v1.6.1`);
+this was checked against the source repo's version string only, not against
+a live GHCR pull, so treat it the same way Step 3's incident 4 (a Dockerfile
+`ARG` pin that silently didn't apply) treats any unverified pin — confirm it
+against the actual artifact, not just where it's declared.
+
+Port 8000 (not the image's own default 8080) to match every other MCP
+workload in this project — overridden via `PROMETHEUS_MCP_BIND_PORT`, a
+supported env var per the upstream README's Configuration Options table.
+
+**No Key Vault CSI / workload identity, no `bicep-deploy` prerequisite.**
+kube-prometheus-stack's Prometheus has no auth in front of it by default —
+trust boundary is NetworkPolicy only, same class of decision Kubernetes MCP
+(Step 4) made for its own, different reason. If Prometheus is ever put
+behind basic auth or a bearer token, the image natively supports
+`PROMETHEUS_USERNAME`/`PROMETHEUS_PASSWORD` or `PROMETHEUS_TOKEN` — wire
+those through the same CSI pattern `github-mcp-secrets-provider.yaml` /
+`azure-devops-mcp-secrets-provider.yaml` already use, don't invent a third
+pattern.
+
+**NetworkPolicy egress label confirmed correct on first try.** The manifest
+assumed kube-prometheus-stack's standard `app.kubernetes.io/name: prometheus`
+pod label in the `monitoring` namespace — unlike Step 2's NetworkPolicy
+incident (guessed `app.kubernetes.io/name: mcpgateway`, actually
+`app: mcp-stack-mcpgateway`), this guess held: the pod's own startup log
+showed `"Prometheus configuration validated"` against the real
+`prometheus-operated` endpoint, and registration reached the SSE handshake
+without a `ConnectTimeout`, so egress worked end to end. Not independently
+re-verified with `kubectl get pods -n monitoring --show-labels` — the
+successful connection is treated as sufficient confirmation here, since a
+wrong label would have blocked the traffic outright.
+
+**Confirmed working end-to-end 2026-07-03** after both incidents above
+(ServiceAccount field placement, image tag): pod `1/1 Running`, registered
+with `status: active`, `reachable: true`, **6 tools federated** — exactly
+matching the tool list predicted below.
+
+### Deploy and register
+
+```bash
+# Confirms svc/prometheus-operated exists in the monitoring namespace before
+# doing anything else — fails fast with the install command if it doesn't.
+make prometheus-mcp-deploy
+
+# Confirm the pod is Running and can actually reach Prometheus
+kubectl get pods -n mcp -l app=prometheus-mcp-server
+kubectl logs -n mcp deploy/prometheus-mcp-server | grep -i prometheus
+
+# Register with ContextForge — no credential to hide (see above), this call
+# only tells the gateway the in-cluster SSE URL
+export JWT_TOKEN=$(make mcp-get-token)
+make mcp-register-prometheus JWT_TOKEN=$JWT_TOKEN
+
+# Verify
+make mcp-list-gateways JWT_TOKEN=$JWT_TOKEN
+make mcp-list-tools JWT_TOKEN=$JWT_TOKEN
+```
+
+Equivalent direct `curl` for registration, for reference:
+
+```bash
 curl -sX POST $GATEWAY_URL/gateways \
   -H "Authorization: Bearer $JWT_TOKEN" \
   -H "Content-Type: application/json" \
@@ -697,11 +892,24 @@ curl -sX POST $GATEWAY_URL/gateways \
     "name": "prometheus-mcp",
     "url": "http://prometheus-mcp-server.mcp.svc.cluster.local:8000/sse",
     "transport": "SSE",
-    "description": "Prometheus — natural language to PromQL, alert summary",
+    "description": "Prometheus — PromQL queries, metric/target discovery (self-hosted, in-cluster, no auth — network-policy-scoped trust boundary)",
     "tags": ["prometheus", "metrics", "observability", "sre"],
     "visibility": "public"
   }' | jq .
 ```
+
+**Confirmed federated tool names (6, 2026-07-03)** — matched the prediction
+exactly: `prometheus-mcp-health-check`, `prometheus-mcp-execute-query`,
+`prometheus-mcp-execute-range-query`, `prometheus-mcp-list-metrics`,
+`prometheus-mcp-get-metric-metadata`, `prometheus-mcp-get-targets`.
+
+**Files added for this step:**
+- `infra/k8s/prometheus-mcp-server.yaml` — Deployment, ServiceAccount (no
+  k8s API access, `automountServiceAccountToken: false`), Service,
+  NetworkPolicy — no wrapper, no CSI, no workload identity (see rationale
+  above)
+- `Makefile` — `prometheus-mcp-deploy` (guards on `svc/prometheus-operated`
+  existing first) and `mcp-register-prometheus` targets
 
 ---
 

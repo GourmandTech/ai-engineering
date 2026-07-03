@@ -1,0 +1,249 @@
+---
+# Prometheus MCP Server — Kubernetes Deployment + Service
+# Runs inside AKS (mcp namespace), registered as a gateway in ContextForge.
+# Runbook: docs/runbooks/phase4-federated-mcp.md, Step 5.
+#
+# ══════════════════════════════════════════════════════════════════════════
+# BLOCKING PREREQUISITE — verify before applying this manifest
+# ══════════════════════════════════════════════════════════════════════════
+# This server is a thin PromQL client — it has nothing to talk to unless a
+# real Prometheus is already running in-cluster. As of this writing,
+# infra/helm/values.azure.yaml's own comment says kube-prometheus-stack is
+# NOT installed yet ("Install first: helm install kube-prom
+# prometheus-community/kube-prometheus-stack -n monitoring" — ServiceMonitor
+# is disabled specifically because those CRDs don't exist). Confirm before
+# deploying this manifest:
+#
+#   kubectl get pods -n monitoring
+#   kubectl get svc -n monitoring | grep prometheus-operated
+#
+# If that namespace/service doesn't exist, install the stack first:
+#
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm repo update
+#   helm install kube-prom prometheus-community/kube-prometheus-stack \
+#     -n monitoring --create-namespace
+#
+# The Prometheus Operator always names the query-side Service
+# "<prometheus-CR-name>-operated" regardless of the Helm release name — for
+# the default kube-prometheus-stack chart values this CR is named
+# "prometheus" (release-name-prefixed CRs are the exception, not the rule,
+# for this specific object), giving prometheus-operated.monitoring.svc.
+# cluster.local:9090, which is also what services/sre-mcp-server/server.py
+# and infra/k8s/sre-mcp-server.yaml already assume. VERIFY the real Service
+# name with `kubectl get svc -n monitoring` once installed — don't trust
+# this comment over the live cluster if they disagree.
+#
+# Once installed, kube-prometheus-stack's Prometheus has no auth in front of
+# it by default (network-policy-only trust boundary) — that's why this
+# manifest carries no Key Vault CSI / workload identity, unlike the
+# github-mcp-server / azure-devops-mcp-server pattern. If Prometheus is ever
+# put behind basic auth or a bearer token, wire PROMETHEUS_USERNAME/
+# PROMETHEUS_PASSWORD or PROMETHEUS_TOKEN through the same CSI pattern those
+# two manifests use — the image supports all three natively (see
+# https://github.com/pab1it0/prometheus-mcp-server#configuration-options).
+#
+# ══════════════════════════════════════════════════════════════════════════
+# Server choice: pab1it0/prometheus-mcp-server
+# ══════════════════════════════════════════════════════════════════════════
+# Chosen over giantswarm/mcp-prometheus, freepik-company/prometheus-mcp, and
+# the AWS-managed-Prometheus-specific awslabs server because it's the most
+# widely adopted general-purpose option, ships an official multi-arch image
+# on GHCR plus its own Helm chart (a second source of truth for the
+# Deployment shape below — charts/prometheus-mcp-server/values.yaml),
+# supports stdio/http/sse transport natively, and exposes a real HTTP
+# /health endpoint (confirmed from the project's own Dockerfile HEALTHCHECK
+# instruction) rather than requiring a tcpSocket-only probe.
+#
+# Like Kubernetes MCP (Step 4), this deploys straight from the upstream
+# public image — no services/prometheus-mcp-wrapper/ dir, no ACR build step,
+# no mcpgateway.translate bridge (the binary natively serves SSE via
+# PROMETHEUS_MCP_SERVER_TRANSPORT=sse). Pinned to 1.6.1 — CONFIRMED against
+# the live GHCR package page (github.com/pab1it0/prometheus-mcp-server/pkgs/
+# container/prometheus-mcp-server), not just pyproject.toml's version string.
+# NOTE: the tag has no "v" prefix (`1.6.1`, not `v1.6.1`) — the first version
+# of this manifest got this wrong (assumed a `v`-prefixed tag by analogy with
+# this project's other pinned images, e.g. kubernetes-mcp-server's
+# `v0.0.63`), which produced a real ImagePullBackOff on first deploy. Exactly
+# the category of gap Step 3's incident 4 (ARG pin silently not applying)
+# warns about — verify a pin against the actual published artifact, not by
+# pattern-matching another project's tagging convention.
+#
+# Port 8000 (not the image's own default 8080) to match this project's
+# convention across every other MCP workload (sre/github/azure-devops/
+# kubernetes-mcp-server all listen on 8000) — overridden via
+# PROMETHEUS_MCP_BIND_PORT, confirmed as a supported env var from the
+# upstream README's Configuration Options table.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-mcp-server
+  namespace: mcp
+  labels:
+    app: prometheus-mcp-server
+    phase: "4"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus-mcp-server
+  template:
+    metadata:
+      labels:
+        app: prometheus-mcp-server
+    spec:
+      serviceAccountName: prometheus-mcp-server
+      containers:
+        - name: prometheus-mcp-server
+          image: ghcr.io/pab1it0/prometheus-mcp-server:1.6.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PROMETHEUS_URL
+              value: "http://prometheus-operated.monitoring.svc.cluster.local:9090"
+            - name: PROMETHEUS_MCP_SERVER_TRANSPORT
+              value: "sse"
+            - name: PROMETHEUS_MCP_BIND_HOST
+              value: "0.0.0.0"
+            - name: PROMETHEUS_MCP_BIND_PORT
+              value: "8000"
+            - name: PROMETHEUS_DISABLE_LINKS
+              value: "true"   # in-cluster tool results don't benefit from a browser-facing Prometheus UI link; saves context tokens per the README
+            - name: PROMETHEUS_REQUEST_TIMEOUT
+              value: "15"
+          ports:
+            - containerPort: 8000
+              name: http
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          volumeMounts:
+            # readOnlyRootFilesystem: true requires a writable /tmp — same
+            # reasoning as kubernetes-mcp-server.yaml's volume mount.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        # Explicit 1000/1000/1000 here (unlike kubernetes-mcp-server.yaml,
+        # which leaves runAsUser unpinned) because the upstream Helm chart's
+        # own podSecurityContext pins these exact values against its own
+        # Dockerfile's `groupadd -r -g 1000 app` / `useradd -u 1000` — this
+        # is the image's own documented UID, not a guess.
+---
+# ServiceAccount — automountServiceAccountToken deliberately disabled. This
+# workload only ever talks to Prometheus's HTTP API (PROMETHEUS_URL above);
+# it has no reason to hold a token for the Kubernetes API at all. Same
+# reasoning as azure-devops-mcp-server.yaml, opposite of
+# kubernetes-mcp-server.yaml (which needs its token for client-go).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus-mcp-server
+  namespace: mcp
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-mcp-server
+  namespace: mcp
+  labels:
+    app: prometheus-mcp-server
+spec:
+  selector:
+    app: prometheus-mcp-server
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+  type: ClusterIP
+---
+# NetworkPolicy — narrower than the GitHub/Azure DevOps egress rules (no
+# public internet needed at all) and simpler than Kubernetes MCP's egress
+# rule (no out-of-VNet public-IP quirk here — Prometheus is genuine
+# same-cluster traffic, reachable as ordinary in-cluster DNS + ClusterIP,
+# unlike kubernetes.default.svc on this specific cluster).
+#
+# UNVERIFIED against a live cluster from this session (no kubectl access
+# here) — the podSelector below assumes kube-prometheus-stack's standard
+# `app.kubernetes.io/name: prometheus` label on the actual Prometheus pod.
+# CONFIRM with `kubectl get pods -n monitoring --show-labels` once the stack
+# is installed, and correct this policy if the real label differs — this is
+# exactly the class of bug Step 2's NetworkPolicy incident (guessed
+# `app.kubernetes.io/name: mcpgateway` vs. the real `app: mcp-stack-
+# mcpgateway`) already burned this project once.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-mcp-server
+  namespace: mcp
+spec:
+  podSelector:
+    matchLabels:
+      app: prometheus-mcp-server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Same ingress source/label as every other MCP server manifest in this
+    # project — verified against the live gateway pod in Step 2
+    # (app=mcp-stack-mcpgateway, the plain Helm release-name label).
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app: mcp-stack-mcpgateway
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Prometheus query API — same-cluster traffic, no public IP involved.
+    # UNVERIFIED label, see header comment above.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090

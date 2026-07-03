@@ -5,7 +5,8 @@
         sre-mcp-build sre-mcp-deploy github-mcp-build github-mcp-deploy \
         azure-devops-mcp-build azure-devops-mcp-deploy \
         kubernetes-mcp-deploy \
-        mcp-get-token mcp-list-gateways mcp-list-tools mcp-register-sre mcp-register-github mcp-register-azure-devops mcp-register-kubernetes \
+        prometheus-mcp-deploy \
+        mcp-get-token mcp-list-gateways mcp-list-tools mcp-register-sre mcp-register-github mcp-register-azure-devops mcp-register-kubernetes mcp-register-prometheus \
         lint clean
 
 # ─────────────────────────────────────────────────────────────
@@ -335,6 +336,10 @@ AZURE_DEVOPS_MCP_TAG   ?= latest
 # No build vars for Kubernetes MCP — deployed straight from the upstream
 # public image (quay.io/containers/kubernetes_mcp_server), no wrapper to
 # build/push to ACR. See infra/k8s/kubernetes-mcp-server.yaml header.
+# Same story for Prometheus MCP — deployed straight from
+# ghcr.io/pab1it0/prometheus-mcp-server, no wrapper, no ACR build step.
+# See infra/k8s/prometheus-mcp-server.yaml header for the prerequisite
+# (kube-prometheus-stack must already be installed in-cluster).
 GATEWAY_URL      ?= https://contextforge.gourmandtech.com
 
 sre-mcp-build: ## Build SRE Toolbox MCP image locally and push to ACR (az acr build/Tasks not permitted on this subscription)
@@ -424,6 +429,13 @@ kubernetes-mcp-deploy: aks-creds ## Deploy Kubernetes MCP server to AKS (no buil
 	@echo "  Verify RBAC: kubectl auth can-i list pods --as=system:serviceaccount:$(NAMESPACE):kubernetes-mcp-server --all-namespaces  (expect 'yes')"
 	@echo "  Verify RBAC is read-only: kubectl auth can-i delete pods --as=system:serviceaccount:$(NAMESPACE):kubernetes-mcp-server --all-namespaces  (expect 'no')"
 
+prometheus-mcp-deploy: aks-creds ## Deploy Prometheus MCP server to AKS (no build step, no bicep-deploy prerequisite — but kube-prometheus-stack MUST already be installed in-cluster; see infra/k8s/prometheus-mcp-server.yaml header)
+	@kubectl get svc -n monitoring prometheus-operated >/dev/null 2>&1 || { echo "ERROR: svc/prometheus-operated not found in namespace monitoring — install kube-prometheus-stack first (see infra/k8s/prometheus-mcp-server.yaml header for the helm install command)"; exit 1; }
+	kubectl apply -f infra/k8s/prometheus-mcp-server.yaml -n $(NAMESPACE)
+	kubectl rollout status deployment/prometheus-mcp-server -n $(NAMESPACE) --timeout=3m
+	@echo "✓ prometheus-mcp-server deployed"
+	@echo "  Verify it can actually reach Prometheus: kubectl logs -n $(NAMESPACE) deploy/prometheus-mcp-server | grep -i prometheus"
+
 mcp-get-token: ## Get a ContextForge JWT — pulls password from Key Vault (KV_NAME required; set ADMIN_EMAIL or uses KV platform-admin-email)
 	$(eval KV  := $(or $(KV_NAME),kv-contextforge-dev))
 	$(eval EMAIL := $(or $(ADMIN_EMAIL),$(shell az keyvault secret show --vault-name $(KV) --name platform-admin-email --query value -o tsv 2>/dev/null)))
@@ -484,6 +496,14 @@ mcp-register-kubernetes: ## Register Kubernetes MCP gateway (JWT_TOKEN required 
 	  -H "Authorization: Bearer $(JWT_TOKEN)" \
 	  -H "Content-Type: application/json" \
 	  -d '{"name":"kubernetes-mcp","url":"http://kubernetes-mcp-server.mcp.svc.cluster.local:8000/sse","transport":"SSE","description":"Kubernetes — pod health, deployments, logs, generic resources (read-only, view ClusterRole, in-cluster AKS API access only)","tags":["kubernetes","aks","observability","sre"],"visibility":"public"}' \
+	  | jq .
+
+mcp-register-prometheus: ## Register Prometheus MCP gateway (JWT_TOKEN required — no credential to hide, kube-prometheus-stack has no auth in front of it by default)
+	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
+	curl -sX POST $(GATEWAY_URL)/gateways \
+	  -H "Authorization: Bearer $(JWT_TOKEN)" \
+	  -H "Content-Type: application/json" \
+	  -d '{"name":"prometheus-mcp","url":"http://prometheus-mcp-server.mcp.svc.cluster.local:8000/sse","transport":"SSE","description":"Prometheus — PromQL queries, metric/target discovery (self-hosted, in-cluster, no auth — network-policy-scoped trust boundary)","tags":["prometheus","metrics","observability","sre"],"visibility":"public"}' \
 	  | jq .
 
 # ─────────────────────────────────────────────────────────────

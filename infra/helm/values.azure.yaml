@@ -13,11 +13,10 @@
 #   Either way, never commit real secret values.
 
 mcpContextForge:
-
   # ── Replicas & scaling ─────────────────────────────────────────────────────
-  replicaCount: 1                        # 1 replica — single node; Recreate strategy avoids rolling-update deadlock
+  replicaCount: 1 # 1 replica — single node; Recreate strategy avoids rolling-update deadlock
   strategy:
-    type: Recreate                       # RollingUpdate needs headroom for +1 pod; we don't have it on 1 node
+    type: Recreate # RollingUpdate needs headroom for +1 pod; we don't have it on 1 node
 
   # HPA disabled: the chart template always renders `spec.replicas` unconditionally
   # (no {{- if not .Values.mcpContextForge.hpa.enabled }} guard in deployment-mcpgateway.yaml).
@@ -30,14 +29,14 @@ mcpContextForge:
   # ── Image ──────────────────────────────────────────────────────────────────
   image:
     repository: ghcr.io/ibm/mcp-context-forge
-    tag: "v1.0.4"                        # pinned — never 'latest' on AKS
+    tag: "v1.0.4" # pinned — never 'latest' on AKS
     pullPolicy: IfNotPresent
 
   # ── Resource limits ────────────────────────────────────────────────────────
   # Production-grade: 2 workers @ 500m each; memory headroom for in-flight requests
   resources:
     requests:
-      cpu: 200m                          # ~239m free on node after postgres+redis; 200m fits with ~39m buffer
+      cpu: 200m # ~239m free on node after postgres+redis; 200m fits with ~39m buffer
       memory: 512Mi
     limits:
       cpu: "1"
@@ -64,7 +63,7 @@ mcpContextForge:
     pathType: Prefix
     tls:
       enabled: true
-      secretName: contextforge-tls                # cert-manager stores the cert here
+      secretName: contextforge-tls # cert-manager stores the cert here
 
   # ── Metrics / ServiceMonitor ───────────────────────────────────────────────
   # AKS + kube-prometheus-stack provides the Prometheus Operator CRD.
@@ -72,12 +71,12 @@ mcpContextForge:
   metrics:
     enabled: true
     serviceMonitor:
-      enabled: false   # requires kube-prometheus-stack CRDs — install separately, then re-enable
+      enabled: true # requires kube-prometheus-stack CRDs — install separately, then re-enable
 
   # ── Non-secret config overrides ────────────────────────────────────────────
   config:
     HTTP_SERVER: "gunicorn"
-    GUNICORN_WORKERS: "2"                # 2 workers for 1-CPU limit (1 worker per core)
+    GUNICORN_WORKERS: "2" # 2 workers for 1-CPU limit (1 worker per core)
 
     ENVIRONMENT: production
     APP_DOMAIN: "https://contextforge.gourmandtech.com"
