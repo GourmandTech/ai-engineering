@@ -174,6 +174,24 @@ module githubMcpIdentity 'modules/workload-identity.bicep' = {
   }
 }
 
+// Phase 4 Step 3 — same pattern as githubMcpIdentity above, dedicated
+// identity + federated credential scoped to the azure-devops-mcp-server
+// ServiceAccount only. See infra/k8s/azure-devops-mcp-secrets-provider.yaml
+// for why this must NOT reuse githubMcpIdentity or the CSI add-on identity.
+module azureDevOpsMcpIdentity 'modules/workload-identity.bicep' = {
+  name: 'deploy-azure-devops-mcp-identity'
+  scope: rg
+  params: {
+    name: 'id-azure-devops-mcp-server'
+    location: location
+    tags: commonTags
+    oidcIssuerUrl: aks.outputs.oidcIssuerUrl
+    serviceAccountNamespace: 'mcp'
+    serviceAccountName: 'azure-devops-mcp-server'
+    keyVaultId: keyVault.outputs.keyVaultId
+  }
+}
+
 // ── Outputs ──────────────────────────────────────────────────────────────────
 
 @description('Resource group that contains all ContextForge resources')
@@ -202,3 +220,6 @@ output csiDriverIdentityObjectId string = aks.outputs.csiDriverIdentityObjectId
 
 @description('GitHub MCP workload identity client ID — use in the ServiceAccount azure.workload.identity/client-id annotation and the SecretProviderClass clientID')
 output githubMcpIdentityClientId string = githubMcpIdentity.outputs.clientId
+
+@description('Azure DevOps MCP workload identity client ID — use in the ServiceAccount azure.workload.identity/client-id annotation and the SecretProviderClass clientID')
+output azureDevOpsMcpIdentityClientId string = azureDevOpsMcpIdentity.outputs.clientId

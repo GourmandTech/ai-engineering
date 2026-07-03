@@ -1,0 +1,189 @@
+---
+# Azure DevOps MCP Server (self-hosted, PAT-scoped) — Kubernetes Deployment + Service
+# Runs inside AKS (mcp namespace), registered as a gateway in ContextForge.
+#
+# Same architecture decision as github-mcp-server.yaml (Step 2): self-hosted
+# in-cluster rather than any vendor-hosted remote endpoint, so the PAT and API
+# traffic stay inside the AKS network boundary. The upstream microsoft/azure-devops-mcp
+# binary only speaks stdio, so this pod wraps it with mcpgateway.translate —
+# see services/azure-devops-mcp-wrapper/Dockerfile for the full rationale and build.
+#
+# The PAT never touches ContextForge's gateway config — it's injected directly
+# into this pod via the Key Vault CSI driver and consumed locally by the
+# mcp-server-azuredevops process. ContextForge only ever sees a plain
+# in-cluster SSE URL (see the mcp-register-azure-devops Makefile target).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: azure-devops-mcp-server
+  namespace: mcp
+  labels:
+    app: azure-devops-mcp-server
+    phase: "4"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: azure-devops-mcp-server
+  template:
+    metadata:
+      labels:
+        app: azure-devops-mcp-server
+        # Required for the azure-workload-identity mutating webhook to inject
+        # the projected service account token this pod's CSI mount federates
+        # with. Without this label the webhook ignores the pod entirely and
+        # the CSI driver has no token to present — same AADSTS70025-shaped
+        # failure hit on github-mcp-server, see runbook Step 2 incident log.
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: azure-devops-mcp-server
+      containers:
+        - name: azure-devops-mcp-server
+          image: acrcontextforgedev.azurecr.io/azure-devops-mcp-server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            # Plain org name, not a secret — the org segment of
+            # https://dev.azure.com/<org>. Set by `make azure-devops-mcp-deploy`
+            # from AZURE_DEVOPS_ORG=<org> (fails fast if unset, same pattern as
+            # the identity client-id substitution below).
+            - name: AZURE_DEVOPS_ORG
+              value: "<AZURE_DEVOPS_ORG>"
+            - name: PERSONAL_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: azure-devops-mcp-secrets
+                  key: PERSONAL_ACCESS_TOKEN
+          volumeMounts:
+            - name: kv-secrets
+              mountPath: /mnt/secrets-store
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          livenessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+      # CSI volume must be mounted by at least one pod for the secrets-store
+      # driver to sync azure-devops-mcp-kv-secrets -> the azure-devops-mcp-secrets
+      # k8s Secret referenced above (CSI driver requirement, not optional wiring).
+      volumes:
+        - name: kv-secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: azure-devops-mcp-kv-secrets
+      securityContext:
+        runAsNonRoot: true
+        # 1001, not 1000: node:20-slim (this image's base) already owns UID
+        # 1000 for its built-in `node` user, so the wrapper's Dockerfile
+        # creates its own `mcp` user at 1001 instead — see
+        # services/azure-devops-mcp-wrapper/Dockerfile for the build failure
+        # that caught this. Must match that Dockerfile's `useradd -u` value
+        # exactly, or this pod can't read /app (owned by 1001) or ends up
+        # running as the base image's own `node` user instead.
+        runAsUser: 1001
+---
+# ServiceAccount — no Kubernetes RBAC permissions needed. This workload only
+# calls out to dev.azure.com; it never talks to the k8s API. Deliberately no
+# ClusterRole/ClusterRoleBinding here (contrast with sre-mcp-server, which
+# does need cluster read access for its k8s tools).
+#
+# The client-id annotation ties this SA to the dedicated UAMI created in
+# infra/bicep/modules/workload-identity.bicep (instantiated in main.bicep as
+# `azureDevOpsMcpIdentity`) — NOT the AKS Key Vault CSI add-on's own identity.
+# Replace <AZURE_DEVOPS_MCP_IDENTITY_CLIENT_ID> with the Bicep output
+# `azureDevOpsMcpIdentityClientId` (make azure-devops-mcp-deploy does this
+# substitution automatically via `az identity show`, same as github-mcp-deploy).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: azure-devops-mcp-server
+  namespace: mcp
+  annotations:
+    azure.workload.identity/client-id: "<AZURE_DEVOPS_MCP_IDENTITY_CLIENT_ID>"
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: azure-devops-mcp-server
+  namespace: mcp
+  labels:
+    app: azure-devops-mcp-server
+spec:
+  selector:
+    app: azure-devops-mcp-server
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+  type: ClusterIP
+---
+# NetworkPolicy — baseline least-privilege network isolation, same shape as
+# github-mcp-server's policy.
+# Ingress: only the ContextForge gateway pods may reach this service.
+# Egress: DNS + HTTPS only. PAT auth talks directly to dev.azure.com over
+# Basic auth — unlike the `azcli`/`envvar` auth modes, it does not need a
+# separate AAD token exchange (no login.microsoftonline.com egress required
+# for this deployment's chosen auth method); if the auth method is ever
+# switched to `azcli`, revisit this policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: azure-devops-mcp-server
+  namespace: mcp
+spec:
+  podSelector:
+    matchLabels:
+      app: azure-devops-mcp-server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Label verified against the live gateway pod for github-mcp-server's
+    # identical policy on 2026-07-02 (`app=mcp-stack-mcpgateway`, the plain
+    # Helm release-name label — not app.kubernetes.io/name). Recheck if
+    # HELM_RELEASE in the Makefile ever changes from `mcp-stack`.
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app: mcp-stack-mcpgateway
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

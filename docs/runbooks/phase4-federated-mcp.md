@@ -14,7 +14,7 @@ Phase 4 turns ContextForge from a single gateway into a true **federated MCP hub
 |---|---|---|---|
 | SRE Toolbox MCP | `services/sre-mcp-server/` (custom Python FastMCP) | SSE | ✅ Running in AKS + registered in ContextForge |
 | GitHub MCP | `github/github-mcp-server` (official, self-hosted) | stdio via `mcpgateway.translate` wrapper | ✅ Running in AKS + registered in ContextForge |
-| Azure DevOps MCP | `microsoft/azure-devops-mcp` (official) | stdio via wrapper | ⬜ |
+| Azure DevOps MCP | `microsoft/azure-devops-mcp` (official) | stdio via `mcpgateway.translate` wrapper | ✅ Running in AKS + registered in ContextForge (40 tools) |
 | Kubernetes MCP | `mcp-server-kubernetes` (community) | stdio via wrapper | ⬜ |
 | Prometheus MCP | `mcp-server-prometheus` (community) | stdio via wrapper | ⬜ |
 
@@ -242,31 +242,218 @@ make mcp-list-tools JWT_TOKEN=$JWT_TOKEN
 
 ## Step 3 — Register Azure DevOps MCP Server
 
-Microsoft's official Azure DevOps MCP server uses stdio transport. Use `mcpgateway.translate` (ContextForge's stdio bridge) to wrap it as an SSE endpoint, or deploy via the community HTTP wrapper.
+**Status (2026-07-03): COMPLETE ✅.** Pod running (`1/1 Running`), registered
+in ContextForge — `status: active`, `reachable: true`, `lastError: null`,
+`toolCount: 40` (matches the local measurement exactly). Confirmed via:
+```
+curl -s $GATEWAY_URL/gateways/<id> -H "Authorization: Bearer $JWT_TOKEN" \
+  | jq '{toolCount, reachable, status, lastError}'
+# → {"toolCount": 40, "reachable": true, "status": "active", "lastError": null}
+```
+and pod logs showing a clean handshake (`GET /sse 200 OK`, three
+`POST /message 202 Accepted`, no `LimitOverrunError` this time).
+
+Microsoft's official server (`microsoft/azure-devops-mcp`, npm package
+`@azure-devops/mcp`) is stdio-only — confirmed from its own
+`docs/GETTINGSTARTED.md`: every documented client launches it as a local
+stdio subprocess. There's no self-hostable HTTP/SSE mode (the Microsoft
+Learn "remote MCP server" is a vendor-hosted Azure DevOps Services preview
+endpoint, not something self-hostable). So this reuses the same
+`mcpgateway.translate` stdio→SSE wrapper pattern as GitHub MCP (Step 2) —
+see `services/azure-devops-mcp-wrapper/Dockerfile` for the full build.
+
+**Auth method chosen: PAT (Personal Access Token)**, not `interactive`
+(browser login, unusable headless) or `azcli` (would need a live `az login`
+session inside the pod). The Azure DevOps server's PAT format is unusual and
+worth calling out because getting it wrong fails silently into an auth
+error, not a config error: `PERSONAL_ACCESS_TOKEN` must be **base64 of
+`<email>:<pat>`**, not the raw token — see
+`infra/k8s/azure-devops-mcp-secrets-provider.yaml` for the exact encoding
+command and PAT scope guidance (`Project and Team (Read)`, `Work Items
+(Read)`, `Build (Read)`).
+
+Unlike `github-mcp-server`, this upstream binary has **no `--read-only`
+flag** — tool-surface reduction is `-d`/domain scoping only
+(`core work-items pipelines`, baked into `entrypoint.sh` — deliberately
+excludes `repositories`; see incident 3 below for why), and actual
+read-only enforcement comes entirely from the PAT's own scopes. Don't skip
+the PAT scoping step assuming there's an app-layer safety net; there isn't
+one here.
 
 ```bash
-# Option: deploy npm package in a container wrapping stdio→SSE
-# See: infra/k8s/azure-devops-mcp-server.yaml
+# 1. Build and push the wrapper image
+make azure-devops-mcp-build
 
-# Register with ContextForge (once running as SSE in-cluster)
+# 2. Generate the PAT (see infra/k8s/azure-devops-mcp-secrets-provider.yaml
+#    for full scope guidance), base64-encode it, and store in Key Vault:
+PAT_B64=$(printf '%s' "bot@example.com:<raw-pat>" | base64)
+az keyvault secret set --vault-name kv-contextforge-dev \
+  --name azure-devops-mcp-pat --value "$PAT_B64"
+
+# 3. Deploy (bicep-deploy must have already provisioned id-azure-devops-mcp-server
+#    via modules/workload-identity.bicep — same pattern as githubMcpIdentity)
+make azure-devops-mcp-deploy AZURE_DEVOPS_ORG=yourorg
+
+# 4. Register with ContextForge — the PAT never touches this call, it already
+#    lives in the pod via Key Vault CSI (same in-cluster-only pattern as GitHub)
+export JWT_TOKEN=$(make mcp-get-token KV_NAME=kv-contextforge-dev)
+make mcp-register-azure-devops JWT_TOKEN=$JWT_TOKEN
+```
+
+Equivalent direct `curl` for step 4, for reference:
+
+```bash
 curl -sX POST $GATEWAY_URL/gateways \
   -H "Authorization: Bearer $JWT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "azure-devops-mcp",
-    "url": "http://azure-devops-mcp.mcp.svc.cluster.local:8000/sse",
+    "url": "http://azure-devops-mcp-server.mcp.svc.cluster.local:8000/sse",
     "transport": "SSE",
-    "auth_type": "bearer",
-    "auth_token": "<AZURE_DEVOPS_PAT>",
-    "description": "Azure DevOps — pipelines, work items, repos",
+    "description": "Azure DevOps — pipelines, releases, work items, boards (self-hosted, in-cluster; repositories domain excluded, source lives in GitHub)",
     "tags": ["azure", "devops", "ci-cd", "iac"],
     "visibility": "public"
   }' | jq .
 ```
 
-**Required env vars for the container:**
-- `AZURE_DEVOPS_ORG_URL` — e.g. `https://dev.azure.com/yourorg`
-- `AZURE_DEVOPS_PAT` — Personal Access Token
+**Files added for this step:**
+- `services/azure-devops-mcp-wrapper/Dockerfile`, `entrypoint.sh` — Node 20
+  base, `@azure-devops/mcp` installed globally and pinned (not `npx` at
+  runtime — avoids re-resolving "latest" on every pod restart)
+- `infra/k8s/azure-devops-mcp-server.yaml` — Deployment, ServiceAccount
+  (workload-identity annotated), Service, NetworkPolicy — same shape as
+  `github-mcp-server.yaml`
+- `infra/k8s/azure-devops-mcp-secrets-provider.yaml` — Key Vault CSI
+  SecretProviderClass, syncs `azure-devops-mcp-pat` → the pod
+- `infra/bicep/main.bicep` — `azureDevOpsMcpIdentity` module instance +
+  `azureDevOpsMcpIdentityClientId` output (reuses `modules/workload-identity.bicep`,
+  unchanged from Step 2)
+
+**Incident log:**
+
+1. **`useradd: UID 1000 is not unique`** (2026-07-02, first `make azure-devops-mcp-build`) —
+   the Dockerfile's `useradd -m -u 1000 mcp` failed at build step 7/7.
+   Root cause: `node:20-slim` (this wrapper's base image) ships its own
+   built-in `node` user already at UID 1000 — unlike the GitHub wrapper's
+   `python:3.12-slim` base, which has no such conflict. Fixed by moving the
+   `mcp` user to UID 1001 in both places it's declared: the Dockerfile's
+   `useradd -u` and the Deployment's `securityContext.runAsUser` in
+   `infra/k8s/azure-devops-mcp-server.yaml` (they must match exactly — a
+   mismatch means the pod can't read `/app`, owned by 1001, or silently runs
+   as the base image's own `node` user at 1000 instead of the intended one).
+   General lesson for Steps 4-5's wrappers: don't assume a base image's UID
+   space is empty just because the previous wrapper's base image's was.
+
+2. **`azure-devops-mcp-deploy` silently proceeded after "id-azure-devops-mcp-server not found"**
+   (2026-07-02) — `make bicep-deploy` had not been run yet to provision the
+   `azureDevOpsMcpIdentity` module, so `az identity show` returned empty and
+   the recipe's guard (`test -n "$$IDENTITY_CLIENT_ID" || (echo ... && exit 1)`)
+   printed the error — then kept going anyway, `sed`-substituting the
+   placeholder with an **empty string** and `kubectl apply`-ing a
+   SecretProviderClass and ServiceAccount with a blank `clientID`/`client-id`
+   annotation. Root cause: `( ... && exit 1 )` runs in a subshell, so `exit 1`
+   only terminates that subshell, not the outer recipe script; since the
+   guard is chained to the rest of the recipe with `;` (not `&&`) inside one
+   multi-line `\`-continued shell invocation, and there's no `set -e`, Make
+   only checks the exit code of the *last* command in that chain (`kubectl
+   apply`), not the failed `test` in the middle. This same pattern existed in
+   `github-mcp-deploy` too but never triggered there, since that identity
+   already existed by the time Step 2's deploy ran.
+   **Fixed** in both targets: guards now use `{ echo ...; exit 1; }` (current
+   shell, not a subshell) so `exit 1` actually terminates the recipe.
+   **Remediation for a deploy that already ran with this bug:** run
+   `make bicep-deploy` to provision the missing identity, then re-run
+   `make azure-devops-mcp-deploy` — `kubectl apply` is idempotent and will
+   patch the already-created resources with the real `clientID` this time,
+   then the recipe's `rollout restart` picks it up. Any future Makefile
+   target with a `test ... || (... && exit 1)` guard chained via `;` into a
+   longer recipe should use `{ ...; exit 1; }` instead, not `( ... )`.
+
+3. **`mcp-register-azure-devops` hung and returned a 504, root cause two layers
+   deep** (2026-07-03) — `make azure-devops-mcp-deploy` succeeded, the pod's
+   own log showed a clean startup (`"Starting Azure DevOps MCP Server"`,
+   `GET /sse 200 OK`, several `POST /message 202 Accepted`), then
+   `make mcp-register-azure-devops` returned `HTTP/2 504 Gateway Time-out`
+   from nginx with a `jq` parse error on the (non-JSON, HTML) body — the
+   registration call was hanging until the ingress's own upstream timeout
+   killed it, not failing with an application error. The pod's logs held the
+   real cause, several layers below the symptom:
+   `asyncio.exceptions.LimitOverrunError: Separator is found, but chunk is
+   longer than limit`, immediately followed by `mcpgateway.translate: stdout
+   pump crashed - terminating bridge`.
+   Root cause: `mcpgateway.translate==0.1.1` reads the wrapped subprocess's
+   stdout via `asyncio.StreamReader.readline()`, which has a hard 64 KiB
+   (65,536-byte) per-line default limit. ContextForge's gateway registration
+   does a live `tools/list` handshake against the SSE URL to discover tools
+   (this is how GitHub's 22 tools got federated in Step 2), and
+   `mcp-server-azuredevops` emits that response as one JSON-RPC line. With
+   all four domains enabled (`core work-items repositories pipelines`) that
+   line is 71,345 bytes — over the limit — so the bridge's stdout pump
+   crashed mid-handshake, the SSE connection hung, and the registration
+   request never got a response until nginx's own timeout fired.
+   Confirmed empirically, not guessed: installed `@azure-devops/mcp` locally
+   in a sandbox, drove it over stdio with a dummy PAT, and measured each
+   domain's `tools/list` response directly: `core` 2,231 B (3 tools),
+   `work-items` 25,385 B (23 tools), `repositories` 29,027 B (22 tools),
+   `pipelines` 14,840 B (14 tools). Also confirmed there's no fix available
+   at the dependency level — `pip index versions mcp-contextforge-gateway`
+   shows `0.1.1` is genuinely the latest on PyPI (no newer release raises the
+   limit), and `python3 -m mcpgateway.translate --help` exposes no
+   buffer-size flag.
+   **Fixed** by dropping `repositories` from the domain list in
+   `entrypoint.sh` (now `core work-items pipelines`, measured at 42,364
+   bytes / 64.6% of the limit, 40 tools) — not picked arbitrarily: this
+   deployment's source code lives in GitHub (already federated via
+   `github-mcp-server`), so Azure Repos tools were never going to be used
+   regardless of the size limit. PAT scope guidance in
+   `azure-devops-mcp-secrets-provider.yaml` updated to drop `Code (Read)`
+   accordingly (least privilege — don't grant a scope for a domain that
+   isn't exposed). If a future deployment genuinely needs `repositories`
+   too, the only real fix is patching `mcpgateway.translate`'s subprocess
+   stream limit directly — not attempted here, since modifying a pinned
+   third-party library's internals without being able to fully verify the
+   change against its source was judged riskier than scoping domains.
+
+4. **Dockerfile `ARG` pin silently didn't apply** (found while investigating
+   incident 3, 2026-07-03) — `ARG AZURE_DEVOPS_MCP_VERSION=2.4.0` was
+   declared *before* `FROM node:20-slim` and never redeclared after it.
+   Docker scopes a pre-`FROM` `ARG` to the `FROM` line itself only; it does
+   not carry into the build stage unless redeclared with a bare
+   `ARG AZURE_DEVOPS_MCP_VERSION` line after `FROM`. So
+   `npm install -g @azure-devops/mcp@${AZURE_DEVOPS_MCP_VERSION}` actually
+   ran with an empty version suffix, which npm silently resolved to
+   `latest` — the exact opposite of the pin-don't-float design this
+   Dockerfile's own comments describe. Caught by installing the pinned
+   version (2.4.0) locally and finding it doesn't even support
+   `--authentication pat` (added between 2.4.0 and the actual latest,
+   2.7.0) — yet the deployed pod's own startup log showed `"authentication":
+   "pat"` working and `"version":"2.7.0"`, which only makes sense if the
+   image built something other than 2.4.0. **Fixed**: re-pinned to 2.7.0
+   (confirmed via `npm view @azure-devops/mcp version`) and added
+   `ARG AZURE_DEVOPS_MCP_VERSION` again immediately after `FROM`. General
+   lesson for Steps 4-5: a value declared correctly in a Dockerfile doesn't
+   mean it's actually in scope where it's used — verify pins took effect
+   (e.g. `docker run --rm <image> mcp-server-azuredevops --version`), don't
+   just trust that the ARG line exists.
+
+5. **`make mcp-list-tools ... | jq ...` failed with "Invalid numeric literal"
+   + SIGPIPE (Error 141)** (2026-07-03, found during final verification) —
+   `mcp-list-tools` and `mcp-list-gateways`'s `curl | jq` recipe lines weren't
+   `@`-silenced, so Make echoed the raw shell command to stdout *before*
+   running it. That's harmless on its own, but piping the whole `make`
+   invocation into a further `| jq '[...]'` (to filter for just this
+   gateway's tools) fed that echoed command text into the second `jq` as if
+   it were the start of the JSON document, which failed to parse it and
+   exited immediately — killing the pipe and SIGPIPE'ing everything upstream
+   of it. Not a registration bug, purely a Makefile hygiene issue that only
+   surfaces when composing these targets with further piping. **Fixed**: both
+   targets' `curl | jq` lines are now `@`-silenced.
+
+**Final verification (2026-07-03):**
+```bash
+curl -s $GATEWAY_URL/tools -H "Authorization: Bearer $JWT_TOKEN" \
+  | jq '[.[] | select(.name | startswith("azure-devops-mcp")) | .name]'
+```
 
 ---
 

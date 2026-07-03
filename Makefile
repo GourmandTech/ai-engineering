@@ -3,7 +3,8 @@
         az-login bicep-validate bicep-deploy aks-creds helm-aks \
         mcp-register mcp-status port-forward \
         sre-mcp-build sre-mcp-deploy github-mcp-build github-mcp-deploy \
-        mcp-get-token mcp-list-gateways mcp-list-tools mcp-register-sre mcp-register-github \
+        azure-devops-mcp-build azure-devops-mcp-deploy \
+        mcp-get-token mcp-list-gateways mcp-list-tools mcp-register-sre mcp-register-github mcp-register-azure-devops \
         lint clean
 
 # ─────────────────────────────────────────────────────────────
@@ -176,6 +177,9 @@ kv-populate: ## Generate and store ContextForge secrets in Key Vault (KV_NAME re
 	@echo "  az keyvault secret set --vault-name $(KV_NAME) --name github-mcp-pat --value 'YourFineGrainedPAT'"
 	@echo "    (fine-grained PAT, repo-scoped, from a bot/machine account — see"
 	@echo "     infra/k8s/github-mcp-secrets-provider.yaml for generation guidance)"
+	@echo "  az keyvault secret set --vault-name $(KV_NAME) --name azure-devops-mcp-pat --value 'BASE64_OF_email:PAT'"
+	@echo "    (value must be base64-encoded '<email>:<pat>', NOT the raw PAT — see"
+	@echo "     infra/k8s/azure-devops-mcp-secrets-provider.yaml for generation + encoding steps)"
 
 aks-delete: ## Delete the AKS cluster and its orphaned role assignments (preserves ACR, Key Vault, VNet)
 	@echo "WARNING: This deletes $(AKS_CLUSTER). ACR, Key Vault, and VNet are preserved."
@@ -325,6 +329,8 @@ SRE_MCP_IMAGE    ?= sre-mcp-server
 SRE_MCP_TAG      ?= latest
 GITHUB_MCP_IMAGE ?= github-mcp-server
 GITHUB_MCP_TAG   ?= latest
+AZURE_DEVOPS_MCP_IMAGE ?= azure-devops-mcp-server
+AZURE_DEVOPS_MCP_TAG   ?= latest
 GATEWAY_URL      ?= https://contextforge.gourmandtech.com
 
 sre-mcp-build: ## Build SRE Toolbox MCP image locally and push to ACR (az acr build/Tasks not permitted on this subscription)
@@ -343,6 +349,14 @@ github-mcp-build: ## Build GitHub MCP wrapper image (stdio->SSE bridge) and push
 	docker push $(ACR)/$(GITHUB_MCP_IMAGE):$(GITHUB_MCP_TAG)
 	@echo "✓ Pushed: $(ACR)/$(GITHUB_MCP_IMAGE):$(GITHUB_MCP_TAG)"
 
+azure-devops-mcp-build: ## Build Azure DevOps MCP wrapper image (stdio->SSE bridge) and push to ACR
+	$(eval ACR := $(shell az acr list -g $(RESOURCE_GROUP) --query '[0].loginServer' -o tsv))
+	@test -n "$(ACR)" || (echo "ERROR: No ACR found in $(RESOURCE_GROUP)" && exit 1)
+	az acr login --name $(shell echo $(ACR) | cut -d. -f1)
+	docker build --platform linux/amd64 -t $(ACR)/$(AZURE_DEVOPS_MCP_IMAGE):$(AZURE_DEVOPS_MCP_TAG) services/azure-devops-mcp-wrapper/
+	docker push $(ACR)/$(AZURE_DEVOPS_MCP_IMAGE):$(AZURE_DEVOPS_MCP_TAG)
+	@echo "✓ Pushed: $(ACR)/$(AZURE_DEVOPS_MCP_IMAGE):$(AZURE_DEVOPS_MCP_TAG)"
+
 aks-scale: ## Manually scale the system node pool (NODE_COUNT required; autoscaler overrides this when active)
 	az aks nodepool scale \
 	  --resource-group $(RESOURCE_GROUP) \
@@ -358,7 +372,7 @@ sre-mcp-deploy: aks-creds ## Deploy SRE Toolbox MCP server to AKS
 github-mcp-deploy: aks-creds ## Deploy self-hosted GitHub MCP server to AKS (requires: make bicep-deploy has run, github-mcp-pat in Key Vault)
 	@TENANT_ID=$$(az account show --query tenantId -o tsv); \
 	IDENTITY_CLIENT_ID=$$(az identity show -g $(RESOURCE_GROUP) -n id-github-mcp-server --query clientId -o tsv); \
-	test -n "$$IDENTITY_CLIENT_ID" || (echo "ERROR: id-github-mcp-server not found — run 'make bicep-deploy' first (adds it via modules/workload-identity.bicep)" && exit 1); \
+	test -n "$$IDENTITY_CLIENT_ID" || { echo "ERROR: id-github-mcp-server not found — run 'make bicep-deploy' first (adds it via modules/workload-identity.bicep)"; exit 1; }; \
 	sed \
 	  -e "s/<TENANT_ID>/$$TENANT_ID/" \
 	  -e "s/<KV_NAME>/kv-contextforge-dev/" \
@@ -377,6 +391,28 @@ github-mcp-deploy: aks-creds ## Deploy self-hosted GitHub MCP server to AKS (req
 	@echo "✓ github-mcp-server deployed"
 	@echo "  Verify the PAT synced: kubectl get secret github-mcp-secrets -n $(NAMESPACE) -o jsonpath='{.data.GITHUB_PERSONAL_ACCESS_TOKEN}' | base64 -d | wc -c"
 
+azure-devops-mcp-deploy: aks-creds ## Deploy self-hosted Azure DevOps MCP server to AKS (requires: make bicep-deploy has run, azure-devops-mcp-pat in Key Vault, AZURE_DEVOPS_ORG set)
+	@test -n "$(AZURE_DEVOPS_ORG)" || (echo "Usage: make azure-devops-mcp-deploy AZURE_DEVOPS_ORG=yourorg  (the org segment of https://dev.azure.com/yourorg)" && exit 1)
+	@TENANT_ID=$$(az account show --query tenantId -o tsv); \
+	IDENTITY_CLIENT_ID=$$(az identity show -g $(RESOURCE_GROUP) -n id-azure-devops-mcp-server --query clientId -o tsv); \
+	test -n "$$IDENTITY_CLIENT_ID" || { echo "ERROR: id-azure-devops-mcp-server not found — run 'make bicep-deploy' first (adds it via modules/workload-identity.bicep)"; exit 1; }; \
+	sed \
+	  -e "s/<TENANT_ID>/$$TENANT_ID/" \
+	  -e "s/<KV_NAME>/kv-contextforge-dev/" \
+	  -e "s/<AZURE_DEVOPS_MCP_IDENTITY_CLIENT_ID>/$$IDENTITY_CLIENT_ID/" \
+	  infra/k8s/azure-devops-mcp-secrets-provider.yaml | kubectl apply -n $(NAMESPACE) -f -; \
+	sed \
+	  -e "s/<AZURE_DEVOPS_MCP_IDENTITY_CLIENT_ID>/$$IDENTITY_CLIENT_ID/" \
+	  -e "s/<AZURE_DEVOPS_ORG>/$(AZURE_DEVOPS_ORG)/" \
+	  infra/k8s/azure-devops-mcp-server.yaml | kubectl apply -n $(NAMESPACE) -f -
+	@# Same reasoning as github-mcp-deploy: AZURE_DEVOPS_MCP_TAG defaults to
+	@# `latest` and a rebuilt image under the same tag doesn't change the
+	@# Deployment YAML text, so `kubectl apply` alone won't roll it out.
+	kubectl rollout restart deployment/azure-devops-mcp-server -n $(NAMESPACE)
+	kubectl rollout status deployment/azure-devops-mcp-server -n $(NAMESPACE) --timeout=3m
+	@echo "✓ azure-devops-mcp-server deployed"
+	@echo "  Verify the PAT synced: kubectl get secret azure-devops-mcp-secrets -n $(NAMESPACE) -o jsonpath='{.data.PERSONAL_ACCESS_TOKEN}' | base64 -d | wc -c"
+
 mcp-get-token: ## Get a ContextForge JWT — pulls password from Key Vault (KV_NAME required; set ADMIN_EMAIL or uses KV platform-admin-email)
 	$(eval KV  := $(or $(KV_NAME),kv-contextforge-dev))
 	$(eval EMAIL := $(or $(ADMIN_EMAIL),$(shell az keyvault secret show --vault-name $(KV) --name platform-admin-email --query value -o tsv 2>/dev/null)))
@@ -391,12 +427,19 @@ mcp-get-token: ## Get a ContextForge JWT — pulls password from Key Vault (KV_N
 
 mcp-list-gateways: ## List all registered gateways (JWT_TOKEN required)
 	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first: eval \$$(make mcp-get-token ...)" && exit 1)
-	curl -sf $(GATEWAY_URL)/gateways \
+	@# @-silenced (unlike most other recipes here) specifically so this target's
+	@# output is pure JSON and safe to pipe into a further `| jq ...` — without
+	@# it, Make echoes the raw curl command to stdout before running it, and a
+	@# downstream jq chokes trying to parse that echoed shell text as JSON
+	@# (confirmed 2026-07-03: `make mcp-list-tools ... | jq ...` failed with
+	@# "Invalid numeric literal" + SIGPIPE/Error 141 for exactly this reason).
+	@curl -sf $(GATEWAY_URL)/gateways \
 	  -H "Authorization: Bearer $(JWT_TOKEN)" | jq '[.[] | {name, url, status: .enabled}]'
 
 mcp-list-tools: ## List all federated tools across registered gateways (JWT_TOKEN required)
 	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
-	curl -sf $(GATEWAY_URL)/tools \
+	@# See mcp-list-gateways above for why this is @-silenced.
+	@curl -sf $(GATEWAY_URL)/tools \
 	  -H "Authorization: Bearer $(JWT_TOKEN)" \
 	  | jq '{total: length, names: [.[].name]}'
 
@@ -414,6 +457,14 @@ mcp-register-github: ## Register self-hosted GitHub MCP gateway (JWT_TOKEN requi
 	  -H "Authorization: Bearer $(JWT_TOKEN)" \
 	  -H "Content-Type: application/json" \
 	  -d '{"name":"github-mcp","url":"http://github-mcp-server.mcp.svc.cluster.local:8000/sse","transport":"SSE","description":"GitHub — repos, PRs, issues, Actions (self-hosted, read-only, in-cluster)","tags":["github","vcs","ci-cd"],"visibility":"public"}' \
+	  | jq .
+
+mcp-register-azure-devops: ## Register self-hosted Azure DevOps MCP gateway (JWT_TOKEN required — no PAT here, it lives in the pod via Key Vault CSI)
+	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
+	curl -sX POST $(GATEWAY_URL)/gateways \
+	  -H "Authorization: Bearer $(JWT_TOKEN)" \
+	  -H "Content-Type: application/json" \
+	  -d '{"name":"azure-devops-mcp","url":"http://azure-devops-mcp-server.mcp.svc.cluster.local:8000/sse","transport":"SSE","description":"Azure DevOps — pipelines, releases, work items, boards (self-hosted, in-cluster; repositories domain excluded, source lives in GitHub)","tags":["azure","devops","ci-cd","iac"],"visibility":"public"}' \
 	  | jq .
 
 # ─────────────────────────────────────────────────────────────
