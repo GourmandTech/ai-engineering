@@ -449,20 +449,27 @@ mcp-get-token: ## Get a ContextForge JWT — pulls password from Key Vault (KV_N
 	  | jq -r .access_token
 
 mcp-list-gateways: ## List all registered gateways (JWT_TOKEN required)
-	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first: eval \$$(make mcp-get-token ...)" && exit 1)
+	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first: export JWT_TOKEN=\$$(make mcp-get-token)" && exit 1)
 	@# @-silenced (unlike most other recipes here) specifically so this target's
 	@# output is pure JSON and safe to pipe into a further `| jq ...` — without
 	@# it, Make echoes the raw curl command to stdout before running it, and a
 	@# downstream jq chokes trying to parse that echoed shell text as JSON
 	@# (confirmed 2026-07-03: `make mcp-list-tools ... | jq ...` failed with
 	@# "Invalid numeric literal" + SIGPIPE/Error 141 for exactly this reason).
-	@curl -sf $(GATEWAY_URL)/gateways \
+	@# ?limit=0 disables ContextForge's default pagination (PAGINATION_DEFAULT_PAGE_SIZE=50)
+	@# so this returns every registered gateway as a plain array, not just the first 50.
+	@# Harmless at 5 gateways today; added for when that count grows.
+	@curl -sf "$(GATEWAY_URL)/gateways?limit=0" \
 	  -H "Authorization: Bearer $(JWT_TOKEN)" | jq '[.[] | {name, url, status: .enabled}]'
 
 mcp-list-tools: ## List all federated tools across registered gateways (JWT_TOKEN required)
 	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
 	@# See mcp-list-gateways above for why this is @-silenced.
-	@curl -sf $(GATEWAY_URL)/tools \
+	@# ?limit=0 disables ContextForge's default pagination (PAGINATION_DEFAULT_PAGE_SIZE=50) —
+	@# confirmed 2026-07-03: without it, GET /tools silently returned only the first 50 of
+	@# the 86 actually-federated tools (5+22+40+13+6 across all five gateways), which looked
+	@# like a real discovery gap until traced to pagination, not a bug in any one gateway.
+	@curl -sf "$(GATEWAY_URL)/tools?limit=0" \
 	  -H "Authorization: Bearer $(JWT_TOKEN)" \
 	  | jq '{total: length, names: [.[].name]}'
 

@@ -6,6 +6,26 @@ Phase 4 turns ContextForge from a single gateway into a true **federated MCP hub
 
 **Production gateway:** `https://contextforge.gourmandtech.com`
 
+### Numbering scheme — two different lists, keep them straight
+
+`CLAUDE.md`'s "Phase 4 sub-tasks" list (1-6) and this runbook's own `## Step
+N` headings (0-9) count different things and don't line up 1:1 — a bare
+"Phase 4 step N" is genuinely ambiguous between the two. Reference table:
+
+| CLAUDE.md sub-task | This runbook |
+|---|---|
+| 1-3. Build/deploy/register SRE Toolbox | Step 1 |
+| 4. Register remaining MCP servers (GitHub, ADO, K8s, Prometheus) | Steps 2, 3, 4, 5 (one server each) |
+| — (implicit, not its own sub-task) | Step 6 — Verify All Gateways Registered |
+| 5. Create RBAC teams + virtual servers | Step 7 |
+| 6. Configure Entra ID SSO | Step 8 |
+| — (implicit, not its own sub-task) | Step 9 — End-to-End Smoke Test |
+
+When someone says "Phase 4 step N," check which list they mean before
+acting on it — CLAUDE.md's numbering is the one tracked as the checklist of
+record; this runbook's `## Step N` headings are a finer-grained breakdown of
+CLAUDE.md sub-task 4 alone, plus the two cross-cutting sub-tasks 5-6.
+
 ---
 
 ## MCP Server Inventory
@@ -72,6 +92,27 @@ echo ${JWT_TOKEN:0:30}...   # non-empty = success
 
 > ✅ **Confirmed working** (2026-07-02): JWT exported successfully after syncing KV password with current admin password.
 
+### Also export `GATEWAY_URL` — required for the raw `curl` reference commands, not just `make`
+
+Every `make mcp-*` target works with no further setup because `GATEWAY_URL` is a
+**Makefile** variable (`GATEWAY_URL ?= https://contextforge.gourmandtech.com`,
+substituted by `make` itself before the recipe's shell command ever runs).
+Every step in this runbook also shows an "equivalent direct `curl`" block for
+reference — those use `$GATEWAY_URL` as a **shell** variable, which is a
+different thing and is never set just by running `make`. Confirmed real
+2026-07-03: `curl -s $GATEWAY_URL/tools -H "Authorization: Bearer $JWT_TOKEN"
+| jq ...` silently produced no output at all in a shell where `GATEWAY_URL`
+had never been exported — `-s` suppresses curl's own error message, `curl`
+without a scheme (`$GATEWAY_URL` expanding to an empty string) fails
+silently, and `jq` on empty stdin produces nothing either, so the whole
+pipeline looks like it just... didn't happen, no error surfaced anywhere.
+Export it once per shell session alongside `JWT_TOKEN` and every raw `curl`
+snippet in this runbook works verbatim:
+
+```bash
+export GATEWAY_URL="https://contextforge.gourmandtech.com"
+```
+
 ---
 
 ## Step 1 — Deploy + Register SRE Toolbox MCP Server ✅ COMPLETE
@@ -122,7 +163,7 @@ make mcp-list-tools JWT_TOKEN=$JWT_TOKEN
 
 **Auth: fine-grained PAT via Key Vault + CSI, not a GitHub App.** GitHub App installation-token auth would be the stronger pattern (short-lived tokens, not tied to a human account, its own audit identity) — but it's currently broken in the upstream `github-mcp-server` binary: a forced `GET /user` check doesn't work with App auth (tracked at [github/github-mcp-server#1610](https://github.com/github/github-mcp-server/issues/1610), still open as of this writing). Until that lands, the production-forward compromise is a **fine-grained PAT** (not classic — classic PATs can't be repo-scoped), issued to a dedicated bot/machine account rather than a human's, stored only in Key Vault, and synced into the pod via the Secrets Store CSI driver — never passed to `make` as a plaintext arg, never touching ContextForge's own gateway config. Revisit GitHub App auth once #1610 is resolved upstream.
 
-**Transport: upstream binary is stdio-only.** `github/github-mcp-server`'s own Dockerfile (`ENTRYPOINT ["/server/github-mcp-server"]`, `CMD ["stdio"]`) confirms there's no self-hostable HTTP/SSE mode — the only HTTP transport is GitHub's vendor-hosted endpoint. So this server needs the same `mcpgateway.translate` stdio→SSE bridge that Steps 3-5 (Azure DevOps, Kubernetes, Prometheus) already call for — one wrapper pattern reused four times rather than four bespoke integrations.
+**Transport: upstream binary is stdio-only.** `github/github-mcp-server`'s own Dockerfile (`ENTRYPOINT ["/server/github-mcp-server"]`, `CMD ["stdio"]`) confirms there's no self-hostable HTTP/SSE mode — the only HTTP transport is GitHub's vendor-hosted endpoint. So this server needs the same `mcpgateway.translate` stdio→SSE bridge that Step 3 (Azure DevOps) also needs. Steps 4-5 (Kubernetes, Prometheus) turned out not to need it — both of those upstream binaries natively serve SSE — so the wrapper pattern ended up reused twice, not four times as originally planned here.
 
 **Least privilege:** the wrapper image bakes in `--read-only` plus a scoped `GITHUB_TOOLSETS=repos,issues,pull_requests,actions` (verified flags, current as of `github-mcp-server` v1.0.4 / May 2026 — re-check `--help` output on version bumps, this project moves fast). Write tools are unavailable regardless of what the backing PAT is scoped to.
 
@@ -236,7 +277,7 @@ make mcp-list-tools JWT_TOKEN=$JWT_TOKEN
 **Confirmed federated tool names** (22, `github-mcp-<tool-name>`, underscores converted to hyphens):
 `github-mcp-search-repositories`, `github-mcp-search-pull-requests`, `github-mcp-search-issues`, `github-mcp-search-code`, `github-mcp-pull-request-read`, `github-mcp-list-tags`, `github-mcp-list-releases`, `github-mcp-list-pull-requests`, `github-mcp-list-issues`, `github-mcp-list-issue-types`, `github-mcp-list-commits`, `github-mcp-list-branches`, `github-mcp-issue-read`, `github-mcp-get-tag`, `github-mcp-get-release-by-tag`, `github-mcp-get-latest-release`, `github-mcp-get-label`, `github-mcp-get-job-logs`, `github-mcp-get-file-contents`, `github-mcp-get-commit`, `github-mcp-actions-list`, `github-mcp-actions-get`.
 
-**Takeaways for Steps 3-5** (Azure DevOps, Kubernetes, Prometheus — all use the same `mcpgateway.translate` stdio→SSE wrapper pattern): instantiate `modules/workload-identity.bicep` per server rather than sharing the CSI add-on's identity; include the wrapped binary's required subcommand (check its own Dockerfile `CMD`, don't assume flags alone are enough); verify the NetworkPolicy ingress label against the live gateway pod (`app=mcp-stack-mcpgateway`, not `app.kubernetes.io/name`) before relying on it; pin `mcp-contextforge-gateway`'s version and confirm its CLI directly rather than trusting secondary docs; and remember `kubectl apply` alone won't roll out a rebuilt `:latest` image without a `rollout restart`.
+**Takeaways for Steps 3-5** (Azure DevOps, Kubernetes, Prometheus — only Azure DevOps ended up actually using the `mcpgateway.translate` stdio→SSE wrapper pattern; Kubernetes and Prometheus both natively serve SSE): where the wrapper pattern does apply (Azure DevOps, and GitHub above), instantiate `modules/workload-identity.bicep` per server rather than sharing the CSI add-on's identity; include the wrapped binary's required subcommand (check its own Dockerfile `CMD`, don't assume flags alone are enough); pin `mcp-contextforge-gateway`'s version and confirm its CLI directly rather than trusting secondary docs; and remember `kubectl apply` alone won't roll out a rebuilt `:latest` image without a `rollout restart`. The NetworkPolicy-ingress-label lesson (verify against the live gateway pod — `app=mcp-stack-mcpgateway`, not `app.kubernetes.io/name`) applies to every server regardless of wrapper.
 
 ---
 
@@ -913,23 +954,75 @@ exactly: `prometheus-mcp-health-check`, `prometheus-mcp-execute-query`,
 
 ---
 
-## Step 6 — Verify All Gateways Registered
+## Step 6 — Verify All Gateways Registered ✅ COMPLETE
+
+**Confirmed 2026-07-03, after the two gotchas below were fixed:** all 5
+gateways registered and `enabled: true` (`sre-toolbox`, `github-mcp`,
+`azure-devops-mcp`, `kubernetes-mcp`, `prometheus-mcp`), and `"total": 86`
+tools federated — exactly matching 5 (SRE) + 22 (GitHub) + 40 (Azure DevOps)
++ 13 (Kubernetes) + 6 (Prometheus). Phase 4 sub-task 4 (register all MCP
+servers) is fully done and verified end-to-end; next up is sub-tasks 5-6
+(RBAC teams/virtual servers, then Entra ID SSO — Steps 7-8).
+
+**Two real gotchas found running this step 2026-07-03, both fixed — see
+below before assuming a bare "no output" or "only 50 tools" result means
+something is actually broken.**
 
 ```bash
 # List all registered gateways (response is a bare JSON array — no wrapper object)
 make mcp-list-gateways JWT_TOKEN=$JWT_TOKEN
 
-# Or directly:
-curl -s $GATEWAY_URL/gateways \
+# Or directly (requires GATEWAY_URL exported per Step 0 — see gotcha #1 below):
+curl -s "$GATEWAY_URL/gateways?limit=0" \
   -H "Authorization: Bearer $JWT_TOKEN" | jq '[.[] | {name, url, enabled}]'
 
 # List all federated tools (also a bare array)
 make mcp-list-tools JWT_TOKEN=$JWT_TOKEN
 
 # Or directly:
-curl -s $GATEWAY_URL/tools \
+curl -s "$GATEWAY_URL/tools?limit=0" \
   -H "Authorization: Bearer $JWT_TOKEN" | jq '{total: length, names: [.[].name]}'
 ```
+
+Expected result once both gotchas below are accounted for: 5 gateways, all
+`enabled: true`, and `"total": 86` tools (5 SRE Toolbox + 22 GitHub + 40
+Azure DevOps + 13 Kubernetes + 6 Prometheus).
+
+### Gotcha 1: raw `curl $GATEWAY_URL/...` silently returns nothing
+
+Observed 2026-07-03: `make mcp-list-gateways`/`make mcp-list-tools` returned
+real JSON, but the "or directly" `curl` commands right below them produced
+no output at all — no data, no error, nothing. Root cause: `GATEWAY_URL` is
+a **Makefile** variable, substituted by `make` itself before the recipe's
+shell command runs — it was never exported as a **shell** variable, so in
+the user's own shell `$GATEWAY_URL` expanded to an empty string. `curl -s`
+against an empty/schemeless URL fails, and `-s` suppresses the error message
+along with the progress bar; the empty result piped into `jq` then produces
+no output either. Nothing crashed, nothing errored visibly — the whole
+pipeline just silently did nothing. **Fixed:** export it once per shell
+session, per the addition to Step 0 above:
+
+```bash
+export GATEWAY_URL="https://contextforge.gourmandtech.com"
+```
+
+### Gotcha 2: `GET /tools` (and `/gateways`) cap at 50 results by default
+
+Observed 2026-07-03: `make mcp-list-tools` returned `"total": 50` even
+though the five gateways' own `toolCount`s sum to 86 (5+22+40+13+6) — the
+`names` array cut off mid-way through the Azure DevOps tool list, with no
+GitHub or SRE Toolbox tool names appearing at all. **Root cause, confirmed
+against ContextForge's own source/docs, not guessed:** the gateway's REST
+list endpoints default to `PAGINATION_DEFAULT_PAGE_SIZE=50` and silently
+return only the first page as a plain array unless told otherwise.
+`limit=0` is the documented way to disable pagination and get every item
+back in one plain-array response (an explicit numeric `limit` up to
+`PAGINATION_MAX_PAGE_SIZE=500` also works, but `limit=0` doesn't need this
+project's tool count tracked against that ceiling as it keeps growing).
+**Fixed:** both `make mcp-list-gateways`/`make mcp-list-tools` (Makefile)
+and the raw `curl` snippets above now append `?limit=0`. Re-run after
+pulling this fix — the earlier 50-item results in this runbook's Step 5
+"Known Issues" section undercounted, not the gateways themselves.
 
 ---
 
@@ -1123,6 +1216,10 @@ curl -s https://contextforge.gourmandtech.com/metrics | grep mcp_tool_calls_tota
 
 - **Responses are bare JSON arrays** — `GET /gateways` and `GET /tools` return a JSON array directly, not `{"gateways": [...]}`. Use `jq 'length'` and `jq '.[].name'`, not `.tools | length`.
 
+- **List endpoints paginate at 50 by default** — `GET /gateways` and `GET /tools` both default to `PAGINATION_DEFAULT_PAGE_SIZE=50` and silently return only the first page as a plain array — no `next`/`hasMore` field to tip you off, it just looks like a smaller result than reality. Confirmed 2026-07-03: `GET /tools` returned `"total": 50` when 86 tools were actually federated across 5 gateways. Append `?limit=0` to disable pagination entirely (or an explicit `limit` up to `PAGINATION_MAX_PAGE_SIZE=500`). `make mcp-list-gateways`/`make mcp-list-tools` and this runbook's raw `curl` references all append `?limit=0` now — see Step 6's gotcha #2 for the full incident.
+
+- **`$GATEWAY_URL` is a Makefile variable, not a shell one** — every `make mcp-*` target works standalone because `make` substitutes `GATEWAY_URL ?= https://contextforge.gourmandtech.com` into the recipe itself. The "equivalent direct `curl`" reference blocks throughout this runbook use `$GATEWAY_URL` as a *shell* variable, which is never set just by running `make` — copy-pasting one of those blocks into a shell that never exported `GATEWAY_URL` produces a silent no-op (`curl -s` against an empty/schemeless URL fails quietly, and `-s` swallows the error). Export `GATEWAY_URL="https://contextforge.gourmandtech.com"` once per shell session (Step 0) before running any raw `curl` reference command in this doc.
+
 - **`auth_token` for bearer auth, not `auth_value`** — `GatewayCreate` schema field is `auth_token`. For unauthenticated in-cluster gateways, omit `auth_type` entirely.
 
 - **Gateways default to `visibility=public`** — Confirmed from `GatewayCreate` schema: `visibility` defaults to `"public"`, not `"private"`. Set `"visibility": "public"` explicitly to be clear; set `"visibility": "team"` to restrict to a specific team's virtual server.
@@ -1154,6 +1251,23 @@ curl -s https://contextforge.gourmandtech.com/metrics | grep mcp_tool_calls_tota
 2. Confirm the value is set in the running pod: `kubectl exec -n mcp deploy/mcp-stack-mcpgateway -- env | grep CSRF`
 3. Review ContextForge CSRF middleware config in upstream docs / GitHub issues
 4. Try `COOKIE_SAMESITE: "lax"` as a test (revert to `strict` once resolved)
+
+### `GET /tools` capped at 50 results — RESOLVED 2026-07-03 ✅
+
+**Was:** After all five gateways were registered (SRE 5 + GitHub 22 + Azure
+DevOps 40 + Kubernetes 13 + Prometheus 6 = 86 tools expected),
+`make mcp-list-tools` returned `"total": 50`.
+
+**Root cause, confirmed (not just suspected) against ContextForge's own
+pagination behavior:** `GET /tools` and `GET /gateways` both default to
+`PAGINATION_DEFAULT_PAGE_SIZE=50` and silently return only the first page.
+`?limit=0` disables pagination and returns everything as a plain array.
+
+**Fixed:** `make mcp-list-gateways`/`make mcp-list-tools` (Makefile) and
+every raw `curl` reference in this runbook now append `?limit=0`. Full
+incident writeup: Step 6, gotcha #2. Also added as a permanent entry in
+"Key Lessons / Gotchas" below, since it applies to any list endpoint, not
+just this one verification pass.
 
 ---
 
