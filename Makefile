@@ -1,13 +1,16 @@
 .PHONY: help up down logs test \
-        minikube-start helm-install helm-upgrade helm-status helm-diff helm-uninstall \
+        minikube-start helm-install helm-upgrade helm-status helm-diff helm-diff-aks helm-uninstall \
         az-login bicep-validate bicep-deploy aks-creds helm-aks \
         mcp-register mcp-status port-forward \
         sre-mcp-build sre-mcp-deploy github-mcp-build github-mcp-deploy \
         azure-devops-mcp-build azure-devops-mcp-deploy \
         kubernetes-mcp-deploy \
         prometheus-mcp-deploy \
+        sre-agent-build sre-agent-deploy \
         mcp-get-token mcp-list-gateways mcp-list-tools mcp-register-sre mcp-register-github mcp-register-azure-devops mcp-register-kubernetes mcp-register-prometheus \
         mcp-create-team mcp-list-teams mcp-create-server mcp-list-servers \
+        mcp-create-scoped-token sre-agent-get-token coordinator-get-token \
+        mcp-register-a2a-sre-agent mcp-attach-a2a-agent \
         lint clean
 
 # ─────────────────────────────────────────────────────────────
@@ -109,6 +112,14 @@ helm-diff: ## Show diff between deployed and local chart (requires helm-diff plu
 	  --namespace $(NAMESPACE) \
 	  --values $(HELM_VALUES) \
 	  --kube-context $(MINIKUBE_PROFILE)
+
+helm-diff-aks: aks-creds ## AKS-context variant of helm-diff — used by CI (.github/workflows/ci.yml) to show reviewers a real diff against the live release, not just a green checkmark
+	helm diff upgrade $(HELM_RELEASE) $(HELM_CHART) \
+	  --namespace $(NAMESPACE) \
+	  --values $(HELM_VALUES) \
+	  --values $(HELM_VALUES_AKS) \
+	  --kube-context $(AKS_CLUSTER) \
+	  --allow-unreleased
 
 helm-uninstall: ## Uninstall the Helm release from Minikube
 	helm uninstall $(HELM_RELEASE) -n $(NAMESPACE) --kube-context $(MINIKUBE_PROFILE)
@@ -248,7 +259,16 @@ aks-creds: ## Pull AKS kubeconfig, install kubelogin if missing, and set context
 	kubelogin convert-kubeconfig -l azurecli
 	kubectl config use-context $(AKS_CLUSTER)
 	@echo "✓ Context: $$(kubectl config current-context)"
-	kubectl get nodes
+	@# Best-effort connectivity echo, not a hard gate: Nodes are cluster-scoped,
+	@# and Kubernetes' built-in "view"-equivalent role (what Azure's "AKS RBAC
+	@# Reader" maps to) correctly excludes cluster-scoped resources by design —
+	@# a real-CI identity scoped read-only to the `mcp` namespace's resources
+	@# (what ci.yml's helm-diff actually needs) will legitimately 403 here.
+	@# Failing the whole target over this incidental check would force
+	@# over-privileging that identity for no functional benefit. Callers that
+	@# need actual cluster-admin (e.g. deploy.yml) already have a role that
+	@# passes this.
+	@kubectl get nodes || echo "(kubectl get nodes forbidden for this identity — not fatal, see comment above)"
 
 
 aks-status: ## Show AKS Helm release status and pod health
@@ -335,6 +355,8 @@ GITHUB_MCP_IMAGE ?= github-mcp-server
 GITHUB_MCP_TAG   ?= latest
 AZURE_DEVOPS_MCP_IMAGE ?= azure-devops-mcp-server
 AZURE_DEVOPS_MCP_TAG   ?= latest
+SRE_AGENT_IMAGE  ?= sre-agent
+SRE_AGENT_TAG    ?= latest
 # No build vars for Kubernetes MCP — deployed straight from the upstream
 # public image (quay.io/containers/kubernetes_mcp_server), no wrapper to
 # build/push to ACR. See infra/k8s/kubernetes-mcp-server.yaml header.
@@ -367,6 +389,14 @@ azure-devops-mcp-build: ## Build Azure DevOps MCP wrapper image (stdio->SSE brid
 	docker build --platform linux/amd64 -t $(ACR)/$(AZURE_DEVOPS_MCP_IMAGE):$(AZURE_DEVOPS_MCP_TAG) services/azure-devops-mcp-wrapper/
 	docker push $(ACR)/$(AZURE_DEVOPS_MCP_IMAGE):$(AZURE_DEVOPS_MCP_TAG)
 	@echo "✓ Pushed: $(ACR)/$(AZURE_DEVOPS_MCP_IMAGE):$(AZURE_DEVOPS_MCP_TAG)"
+
+sre-agent-build: ## Build the Phase 5 SRE agent (A2A HTTP wrapper) image and push to ACR
+	$(eval ACR := $(shell az acr list -g $(RESOURCE_GROUP) --query '[0].loginServer' -o tsv))
+	@test -n "$(ACR)" || (echo "ERROR: No ACR found in $(RESOURCE_GROUP)" && exit 1)
+	az acr login --name $(shell echo $(ACR) | cut -d. -f1)
+	docker build --platform linux/amd64 -t $(ACR)/$(SRE_AGENT_IMAGE):$(SRE_AGENT_TAG) agents/sre-agent/
+	docker push $(ACR)/$(SRE_AGENT_IMAGE):$(SRE_AGENT_TAG)
+	@echo "✓ Pushed: $(ACR)/$(SRE_AGENT_IMAGE):$(SRE_AGENT_TAG)"
 
 aks-scale: ## Manually scale the system node pool (NODE_COUNT required; autoscaler overrides this when active)
 	az aks nodepool scale \
@@ -423,6 +453,25 @@ azure-devops-mcp-deploy: aks-creds ## Deploy self-hosted Azure DevOps MCP server
 	kubectl rollout status deployment/azure-devops-mcp-server -n $(NAMESPACE) --timeout=3m
 	@echo "✓ azure-devops-mcp-server deployed"
 	@echo "  Verify the PAT synced: kubectl get secret azure-devops-mcp-secrets -n $(NAMESPACE) -o jsonpath='{.data.PERSONAL_ACCESS_TOKEN}' | base64 -d | wc -c"
+
+sre-agent-deploy: aks-creds ## Deploy the Phase 5 SRE agent (A2A HTTP wrapper) to AKS (requires: make bicep-deploy has run, anthropic-api-key + sre-agent-jwt-token in Key Vault)
+	@TENANT_ID=$$(az account show --query tenantId -o tsv); \
+	IDENTITY_CLIENT_ID=$$(az identity show -g $(RESOURCE_GROUP) -n id-sre-agent --query clientId -o tsv); \
+	test -n "$$IDENTITY_CLIENT_ID" || { echo "ERROR: id-sre-agent not found — run 'make bicep-deploy' first (adds it via modules/workload-identity.bicep)"; exit 1; }; \
+	sed \
+	  -e "s/<TENANT_ID>/$$TENANT_ID/" \
+	  -e "s/<KV_NAME>/kv-contextforge-dev/" \
+	  -e "s/<SRE_AGENT_IDENTITY_CLIENT_ID>/$$IDENTITY_CLIENT_ID/" \
+	  infra/k8s/sre-agent-secrets-provider.yaml | kubectl apply -n $(NAMESPACE) -f -; \
+	sed \
+	  -e "s/<SRE_AGENT_IDENTITY_CLIENT_ID>/$$IDENTITY_CLIENT_ID/" \
+	  infra/k8s/sre-agent.yaml | kubectl apply -n $(NAMESPACE) -f -
+	@# Same reasoning as github-mcp-deploy/azure-devops-mcp-deploy: SRE_AGENT_TAG
+	@# defaults to `latest`, so `kubectl apply` alone won't roll out a rebuilt image.
+	kubectl rollout restart deployment/sre-agent -n $(NAMESPACE)
+	kubectl rollout status deployment/sre-agent -n $(NAMESPACE) --timeout=3m
+	@echo "✓ sre-agent deployed"
+	@echo "  Verify secrets synced: kubectl get secret sre-agent-secrets -n $(NAMESPACE) -o jsonpath='{.data.ANTHROPIC_API_KEY}' | base64 -d | wc -c"
 
 kubernetes-mcp-deploy: aks-creds ## Deploy Kubernetes MCP server to AKS (no build step — deploys the upstream quay.io image directly, no bicep-deploy prerequisite either — no Azure credential involved)
 	kubectl apply -f infra/k8s/kubernetes-mcp-server.yaml -n $(NAMESPACE)
@@ -516,6 +565,37 @@ mcp-register-prometheus: ## Register Prometheus MCP gateway (JWT_TOKEN required 
 	  | jq .
 
 # ─────────────────────────────────────────────────────────────
+# Phase 5.2 — A2A registration
+# ─────────────────────────────────────────────────────────────
+# POST /a2a registers an external agent; ContextForge auto-creates a linked
+# MCP tool (a2a_<name>, integration_type "A2A"). Same visibility/team_id model
+# as gateways/servers — no separate workload identity or RBAC concept needed
+# (confirmed from .contextforge/docs/docs/using/agents/a2a.md before assuming
+# this, per the Phase 5 plan's open question).
+mcp-register-a2a-sre-agent: ## Register the sre-agent as an A2A agent, team-scoped to sre-team (JWT_TOKEN, TEAM_ID required)
+	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
+	@test -n "$(TEAM_ID)" || (echo "TEAM_ID required — look one up with: make mcp-list-teams JWT_TOKEN=..." && exit 1)
+	curl -sX POST $(GATEWAY_URL)/a2a \
+	  -H "Authorization: Bearer $(JWT_TOKEN)" \
+	  -H "Content-Type: application/json" \
+	  -d "{\"agent\": {\"name\": \"sre-agent\", \"endpoint_url\": \"http://sre-agent.mcp.svc.cluster.local:8000/run\", \"agent_type\": \"custom\", \"description\": \"Phase 5.1 SRE agent (Claude Agent SDK) — chains sre-full tools for AKS/Prometheus health checks\", \"tags\": [\"phase5\", \"agent\", \"sre\"]}, \"team_id\": \"$(TEAM_ID)\", \"visibility\": \"team\"}" \
+	  | jq .
+
+mcp-attach-a2a-agent: ## Attach a registered A2A agent to an existing virtual server without disturbing its other tool associations (SERVER_ID, AGENT_ID required; JWT_TOKEN required)
+	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
+	@test -n "$(SERVER_ID)" || (echo "SERVER_ID required — look one up with: make mcp-list-servers JWT_TOKEN=..." && exit 1)
+	@test -n "$(AGENT_ID)" || (echo "AGENT_ID required — the id returned by mcp-register-a2a-sre-agent" && exit 1)
+	@# PUT /servers/{id} only touches association fields that are explicitly
+	@# provided (confirmed from _update_server_associations in
+	@# server_service.py: `if new_ids is None: continue`) — omitting
+	@# associated_tools here leaves the server's existing 86 tools untouched.
+	curl -sX PUT $(GATEWAY_URL)/servers/$(SERVER_ID) \
+	  -H "Authorization: Bearer $(JWT_TOKEN)" \
+	  -H "Content-Type: application/json" \
+	  -d "{\"associated_a2a_agents\": [\"$(AGENT_ID)\"]}" \
+	  | jq .
+
+# ─────────────────────────────────────────────────────────────
 # RBAC — Teams + Virtual Servers (Phase 4 sub-task 5 / runbook Step 7)
 #
 # Verified live 2026-07-04 against $(GATEWAY_URL)/openapi.json and confirmed
@@ -567,6 +647,39 @@ mcp-list-servers: ## List all virtual servers (JWT_TOKEN required)
 	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
 	@curl -sf "$(GATEWAY_URL)/servers?limit=0" \
 	  -H "Authorization: Bearer $(JWT_TOKEN)" | jq '[.[] | {id, name, teamId, team, visibility, toolCount: (.associatedTools | length)}]'
+
+# ─────────────────────────────────────────────────────────────
+# Phase 5 — Agent automation (agents/)
+# ─────────────────────────────────────────────────────────────
+# Team-scoped tokens are minted via POST /tokens (Token Catalog API), NOT
+# /auth/login — /auth/login only issues a session JWT for a real user
+# (platform-admin or SSO), which is exactly what 5.1 is deliberately
+# avoiding. POST /tokens lets an authenticated admin mint a long-lived,
+# narrowed API token for another user (TokenCreateRequest.user_email,
+# "admin only") scoped to a team_id + server_id + explicit permission list.
+# The resulting token embeds is_admin:false, auth_provider:"api_token", and
+# a non-empty "teams" claim — confirmed this actually narrows permissions
+# (not just cosmetic) by reading token_scoping.py / rbac.py's
+# token_teams-is-None-vs-set branch before relying on it.
+mcp-create-scoped-token: ## Mint a team+server-scoped API token for an agent (TOKEN_NAME, USER_EMAIL, TEAM_ID, SERVER_ID required; JWT_TOKEN required for the minting admin)
+	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first: export JWT_TOKEN=\$$(make mcp-get-token)" && exit 1)
+	@test -n "$(TOKEN_NAME)" || (echo "Usage: make mcp-create-scoped-token TOKEN_NAME=sre-agent-5.1 USER_EMAIL=sretester@... TEAM_ID=... SERVER_ID=... JWT_TOKEN=..." && exit 1)
+	@test -n "$(USER_EMAIL)" || (echo "USER_EMAIL required — the non-admin identity the token is issued for" && exit 1)
+	@test -n "$(TEAM_ID)" || (echo "TEAM_ID required — look one up with: make mcp-list-teams JWT_TOKEN=..." && exit 1)
+	@test -n "$(SERVER_ID)" || (echo "SERVER_ID required — look one up with: make mcp-list-servers JWT_TOKEN=..." && exit 1)
+	curl -sX POST $(GATEWAY_URL)/tokens \
+	  -H "Authorization: Bearer $(JWT_TOKEN)" \
+	  -H "Content-Type: application/json" \
+	  -d "{\"name\": \"$(TOKEN_NAME)\", \"description\": \"Phase 5 agent token — team+server scoped, not platform-admin\", \"expires_in_days\": 90, \"team_id\": \"$(TEAM_ID)\", \"scope\": {\"server_id\": \"$(SERVER_ID)\", \"permissions\": [\"tools.read\", \"tools.execute\"]}, \"tags\": [\"phase5\", \"agent\"], \"user_email\": \"$(USER_EMAIL)\"}" \
+	  | jq .
+
+sre-agent-get-token: ## Pull the sre-agent's scoped JWT from Key Vault (KV_NAME required, defaults to kv-contextforge-dev)
+	$(eval KV := $(or $(KV_NAME),kv-contextforge-dev))
+	@az keyvault secret show --vault-name $(KV) --name sre-agent-jwt-token --query value -o tsv
+
+coordinator-get-token: ## Pull the coordinator agent's scoped JWT from Key Vault (KV_NAME required, defaults to kv-contextforge-dev)
+	$(eval KV := $(or $(KV_NAME),kv-contextforge-dev))
+	@az keyvault secret show --vault-name $(KV) --name coordinator-agent-jwt-token --query value -o tsv
 
 # ─────────────────────────────────────────────────────────────
 # Quality & Maintenance

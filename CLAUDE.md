@@ -54,6 +54,121 @@ Full runbook: `docs/runbooks/phase4-federated-mcp.md`
 
 ---
 
+### Phase 5 — IN PROGRESS ⬜ (Agent automation)
+Plan: `docs/phase5-plan.md`. Sequencing: 5.1 → 5.2 → 5.3 → 5.4 (stretch).
+
+**5.1 — Simple agent client against the gateway: ✅ COMPLETE 2026-07-04.** `agents/sre-agent/agent.py`
+uses the **Claude Agent SDK** (`ClaudeSDKClient`, not the one-shot `query()` — see bug below) to connect
+to the `sre-full` virtual server's SSE endpoint (`GET /servers/{id}/sse`) and chain real federated tools
+in one task ("check AKS node pool health, summarize last-24h Prometheus alerts"). Verified live: 6+ tool
+calls across `kubernetes-mcp-*`, `prometheus-mcp-*`, and `sre-toolbox-*`, correct combined report,
+cost $0.61.
+- **Auth, confirmed team-scoped (not platform-admin):** minted via the Token Catalog API
+  (`POST /tokens`, new Makefile target `mcp-create-scoped-token`), not `/auth/login` — `/auth/login`
+  only issues a session JWT for a real user, which is what this step is deliberately avoiding.
+  `POST /tokens` lets an authenticated admin mint a token *for another user*
+  (`TokenCreateRequest.user_email`, admin-only field) scoped to `team_id` + `scope.server_id` +
+  explicit `permissions: [tools.read, tools.execute]`. Issued to the existing non-admin
+  `sretester@djfernandez80gmail.onmicrosoft.com` (created in Phase 4 Step 9, already a plain member of
+  `sre-team`) — decoded JWT confirms `is_admin: false`, `auth_provider: "api_token"`, non-empty `teams`
+  claim. Stored in Key Vault as `sre-agent-jwt-token` (`kv-contextforge-dev`), pulled at runtime via new
+  target `sre-agent-get-token`, same pattern as `mcp-get-token`.
+- **Real bug found and fixed:** the SDK's one-shot `query()` sends the prompt immediately on connect,
+  racing the SSE handshake — confirmed via `ClaudeSDKClient.get_mcp_status()` that the `contextforge`
+  MCP server reports `pending` for ~2s after `connect()` before flipping to `connected`. With `query()`,
+  the model's first turn can run during that ~2s window with zero tools injected — it silently answered
+  with a *hypothetical* plan instead of calling anything, no error surfaced. Fixed by switching to
+  `ClaudeSDKClient` and explicitly polling `get_mcp_status()` until the named server reports `connected`
+  before calling `client.query()` — see `_wait_for_mcp_connection` in `agent.py`.
+- Also confirmed: `claude_agent_sdk.types.McpSSEServerConfig`/`McpStatusResponse` aren't exported from
+  the top-level `claude_agent_sdk` package (only from `.types`) despite `McpSdkServerConfig` being
+  top-level — import from `claude_agent_sdk.types` directly. `get_mcp_status()` returns plain
+  camelCase dict keys (`mcpServers`, not `mcp_servers`) at runtime, not the dataclass attribute access
+  its type hints imply.
+- `tools=[]` in `ClaudeAgentOptions` disables all built-in Claude Code tools (Bash/Read/Write/etc,
+  confirmed from the SDK's own `_build_command` — maps to `--tools ""`) without affecting MCP-injected
+  tools, so the agent can only act through ContextForge's federated tools, not the local filesystem/shell.
+- Requires the `claude` CLI on `PATH` as the SDK's subprocess backend (`npm install -g
+  @anthropic-ai/claude-code`) — not just the Python package.
+
+**5.2 — A2A: agent-to-agent delegation: ✅ COMPLETE 2026-07-04.** A LangGraph coordinator
+(`agents/coordinator-agent/coordinator.py`) delegates to the 5.1 sre-agent through ContextForge's
+A2A integration — not a direct function call. Verified live end-to-end: the coordinator asked for
+both an AKS node-pool check and a Prometheus alert summary; both delegated through the gateway to
+the sre-agent, which chained its own federated tool calls and returned real reports, which the
+coordinator then consolidated into one final answer.
+- **Open question resolved:** A2A agents register via `POST /a2a` with the same `team_id`/`visibility`
+  model as MCP gateways/tools — no separate workload identity or RBAC concept needed. Confirmed from
+  the vendored `.contextforge/docs/docs/using/agents/a2a.md` before assuming this (per the Phase 5
+  plan's instruction not to assume the gateway-registration pattern transfers 1:1).
+- **Specialist made A2A-reachable:** `agents/sre-agent/a2a_server.py` wraps 5.1's `agent.py` in a
+  FastAPI endpoint (`POST /run`) parsing ContextForge's JSONRPC/`parameters`/`query` request shapes
+  (mirrors `.contextforge/scripts/demo_a2a_agent.py`), deployed as a real AKS pod — not a one-shot
+  CLI like 5.1's own test — because ContextForge's A2A integration calls *into* a standing HTTP
+  endpoint. New `id-sre-agent` workload identity (`infra/bicep/modules/workload-identity.bicep`
+  instance, same per-workload pattern as Steps 2-3), CSI-synced secrets (`anthropic-api-key` —
+  a real Anthropic Console key, distinct from a Claude Code OAuth session, since the SDK's `claude`
+  CLI needs to run unattended with no interactive login; `sre-agent-jwt-token` from 5.1), new
+  `make sre-agent-build`/`sre-agent-deploy` targets, Dockerfile needs both Python *and* Node.js
+  (`npm install -g @anthropic-ai/claude-code`) since the SDK drives the CLI as its subprocess backend.
+- **RBAC boundary for the coordinator itself:** rather than give the coordinator the full 87-tool
+  `sre-full` server (which would let its own model bypass delegation and call kubernetes/prometheus
+  tools directly), created a second, narrower virtual server `coordinator-delegate`
+  (id `ed47e8c660dd4e529cefa48826b6cd1d`) whose `associated_tools` is exactly one tool
+  (`a2a-sre-agent`) — same "virtual servers as the RBAC boundary" design decision from Phase 4,
+  applied to scope an agent's capability set instead of a human team's. Coordinator's own token
+  minted the same way as 5.1's (non-admin, `mcp-create-scoped-token`, this server's id).
+- **Real bug #1 (ContextForge, found & worked around):** attaching an A2A agent to a server via
+  `associated_a2a_agents` (`PUT /servers/{id}`, per the docs' own example) updates that field
+  correctly but does **not** expose the agent's auto-created tool over the server's actual SSE tool
+  listing — confirmed the tool row itself *was* created (`a2a_sre-agent`, gateway logs: `"...with
+  tool ID: 19e56cb9..."`) but a live SSE `tools/list` via the properly-scoped non-admin token still
+  showed the pre-existing 86 tools, not 87. Root cause, confirmed by reading `_update_server_associations`
+  in `server_service.py`: a server's exposed tool set is driven by `associated_tools` only;
+  `associated_a2a_agents` is tracked as a separate, independent relationship. Fixed by also `PUT`-ing
+  `associated_tools` with the new tool's id appended to the existing 86 (the field replaces
+  wholesale when provided, so the full list had to be resent — confirmed harmless via
+  `_update_server_associations`'s `if new_ids is None: continue` check, which is why
+  `associated_a2a_agents` alone didn't get clobbered by this same PUT).
+- **Real bug #2 (this project's own IaC, found & fixed):** a routine `make bicep-deploy` for the new
+  `id-sre-agent` identity nearly reproduced the Phase 3/4 node-pool-scale-down incident again —
+  `az deployment sub what-if` showed `count: 2 => 1` on the AKS agent pool. Root cause:
+  `main.bicepparam`'s `nodeCount` was still `1` from before the autoscaler fix, and `aks.bicep` sends
+  `count` unconditionally on every deploy regardless of `enableAutoScaling` — the earlier fix
+  (defaulting `enableAutoScaling` to `true`) never actually addressed this field. Fixed by setting
+  `nodeCount = 2` (matching `minNodeCount`) and verified via a second `what-if` that the count diff
+  disappeared before actually deploying; live node count confirmed unchanged (`2`) post-deploy. Worth
+  a standing habit: run `az deployment sub what-if` before any `bicep-deploy` on this project, not
+  just when a scale-down is already suspected.
+- **Real bug #3 (this project's own IaC, found & fixed):** sre-agent's own outbound SSE connection
+  back to the gateway (`GATEWAY_URL=http://mcp-stack-mcpgateway.mcp.svc.cluster.local:80`, chosen
+  in-cluster rather than the public domain since both pods are already in AKS) hung at
+  `status: pending` forever, timing out every single call with an HTTP 500 — this is the first
+  workload in the project with calls in *both* directions (gateway calls in for A2A invocation,
+  this pod calls out for its own MCP client), and the `sre-agent` NetworkPolicy's egress rules were
+  copy-adapted from `azure-devops-mcp-server`'s, which only ever calls *out* to the public internet:
+  its `namespaceSelector: {}` rule only opens port 53 (DNS), and its public-HTTPS rule explicitly
+  excludes `10.0.0.0/8` (which covers the whole AKS service CIDR) — neither permits reaching another
+  in-cluster pod at all. Confirmed via `kubectl exec sre-agent -- curl ... mcp-stack-mcpgateway...`
+  timing out (exit 28, `HTTP:000`) from inside the pod, while the identical URL worked instantly via
+  `kubectl port-forward` from outside the cluster network — proving the gateway side was healthy and
+  the failure was specifically sre-agent's own egress path. Fixed by adding a dedicated egress rule
+  targeting `app: mcp-stack-mcpgateway` pods on port **4444** (the gateway's actual container port —
+  NetworkPolicy pod-selector rules match the destination pod's real listening port, not the Service's
+  externally-exposed `80`).
+- **Metrics gap noticed, not chased:** `GET /metrics`'s `a2aAgents` block still read
+  `totalInteractions: 0` immediately after two confirmed-successful delegated calls (visible in
+  gateway logs: `"Invoking tool: a2a-sre-agent..."`, `"Calling A2A agent 'sre-agent' at
+  http://sre-agent..."`, `HTTP/1.1 200 OK`). Logs satisfy the plan's "observable in gateway
+  logs/metrics" bar on their own; the counter gap wasn't investigated further (possibly
+  `A2A_STATS_CACHE_TTL=30`-related, possibly a real tracking gap) — flag if this matters later,
+  e.g. for a Phase 5.4 dashboard.
+
+**5.3 — CI/CD (GitHub Actions + OIDC):** not started.
+**5.4 — Observability (stretch):** not started.
+
+---
+
 
 ### Phase 1 — COMPLETE ✅
 - Docker Compose stack running locally at `http://localhost:4444/admin`
@@ -212,7 +327,7 @@ Deploying IBM ContextForge — an open-source AI Gateway that federates MCP serv
 | 2 | Minikube — deploy full Helm stack, learn k8s primitives | ✅ |
 | 3 | AKS — deploy to Azure with Bicep IaC, production-grade config | ✅ |
 | 4 | Federated MCP — register multiple MCP servers, RBAC + OAuth | ✅ |
-| 5 | Agent automation — A2A protocol, multi-agent orchestration | ⬜ |
+| 5 | Agent automation — A2A protocol, multi-agent orchestration | 🔄 (5.1 done) |
 
 ---
 

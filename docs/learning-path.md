@@ -74,7 +74,7 @@ Confirmed complete 2026-07-04, including end-to-end smoke test (health check, ga
 
 ---
 
-## Phase 5: Agent Automation ⬜ IN PROGRESS
+## Phase 5: Agent Automation 🔄 IN PROGRESS (5.1-5.3 done, 5.4 stretch pending)
 **Goal:** A2A protocol, multi-agent orchestration, and CI/CD to close the loop on the whole platform.
 
 Resources:
@@ -83,9 +83,18 @@ Resources:
 - [AutoGen Integration](https://ibm.github.io/mcp-context-forge/latest/using/agents/autogen/)
 
 Tasks:
-- [ ] Build a simple agent that calls tools through ContextForge
-- [ ] Implement A2A: one agent delegates sub-tasks to another via the gateway
-- [ ] Add GitHub Actions CI/CD: lint → helm diff → deploy on merge
-- [ ] Run `/resume-update`
+- [x] Build a simple agent that calls tools through ContextForge — `agents/sre-agent/` (Claude
+  Agent SDK), team-scoped non-admin token against `sre-full`, chains kubernetes/prometheus/sre-toolbox
+  tools for a real AKS+Prometheus health report.
+- [x] Implement A2A: one agent delegates sub-tasks to another via the gateway — `agents/coordinator-agent/`
+  (LangGraph) delegates to the sre-agent (deployed to AKS as a standing A2A endpoint) through
+  ContextForge's A2A integration, verified end-to-end live.
+- [x] Add GitHub Actions CI/CD: lint → helm diff → deploy on merge — `.github/workflows/ci.yml`
+  (unguarded, Reader-only Azure OIDC) + `deploy.yml` (gated by a required-reviewer `production`
+  GitHub Environment, Contributor+RBAC-Admin Azure OIDC, separate app registration from CI's).
+- [ ] Run `/resume-update` — pending PR merge
 
-See `docs/phase5-plan.md` for the detailed task breakdown (drafted 2026-07-03, pending review).
+Full write-up (architecture, every real bug hit and fixed): `docs/runbooks/phase5-agent-automation.md`.
+Condensed status: `CLAUDE.md` Phase 5 section. Original plan: `docs/phase5-plan.md`.
+
+**5.4 (stretch) — OTel tracing on the agents:** not started.
