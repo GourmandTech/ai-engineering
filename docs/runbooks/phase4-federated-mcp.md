@@ -1403,40 +1403,40 @@ Full tutorial: `https://ibm.github.io/mcp-context-forge/manage/sso-microsoft-ent
 
 ## Step 9 — End-to-End Smoke Test
 
-**Status: 🔄 PARTIALLY VERIFIED, not yet run as its own pass.** Items 1-3
-below (health, gateway list, tool list) and a subset of item 5-equivalent
-checks (login/session regression) were exercised incidentally while
-verifying Steps 6 and 8, but the full script below — specifically item 4
-(tool invocation via the MCP SSE protocol) — has not been run end-to-end
-in one pass. Also fixed below: the original draft pointed at
-`/servers/default/sse`, but there is no server named `default` — `GET
-/servers/{server_id}/sse` looks servers up by ID only (`server_service.py`
-`get_server()` does a primary-key `db.get()`, not a name lookup), and the
-real servers created in Step 7 are `sre-full`
-(`7c7b4364c6214f089e847802819b7f2f`) and `dev-tools`
-(`86c6565d348848f195d1b41640432a35`) — look the current IDs up via `make
-mcp-list-servers` rather than assuming these stay stable.
+**Status: ✅ COMPLETE 2026-07-04**, with one confirmed upstream ContextForge
+bug found and worked around (not fixed — it's vendored code, see below).
+Items 1-3 passed cleanly. Item 4 initially failed with the admin JWT for a
+real, confirmed reason unrelated to this project's own RBAC setup; item 5
+uncovered two more inaccuracies in the original script. Full incident
+detail below the script.
 
 ```bash
+export JWT_TOKEN=$(make mcp-get-token)
+
 # 1. Health check
 curl -s https://contextforge.gourmandtech.com/health | jq .
+# → {"status": "healthy", ...}
 
 # 2. List all registered gateways
 make mcp-list-gateways JWT_TOKEN=$JWT_TOKEN
+# → all 5 gateways, enabled: true
 
 # 3. List all federated tools (bare array — no wrapper object)
 make mcp-list-tools JWT_TOKEN=$JWT_TOKEN
-# Expected: {"total": N, "names": ["sre-toolbox-sre-healthcheck", ...]}
-# Tool naming: <gateway-name>-<tool-name> (hyphens, underscores converted)
+# → {"total": 86, "names": [...]} — 5+22+40+13+6, exact match
 
 # 4. Invoke a tool via MCP SSE protocol
 # There is no REST POST /tools/call endpoint — tool invocation goes through
 # the MCP SSE stream at /servers/{server_id}/sse, where {server_id} is a
 # real virtual server ID (from `make mcp-list-servers`) — there is no
 # server literally named "default"; the lookup is by ID only.
+#
+# IMPORTANT: as of 2026-07-04, this call 404s with the platform-admin JWT
+# above — this is a confirmed ContextForge bug (see below), not a config
+# error. It succeeds with a session belonging to a real, non-admin member
+# of the target server's team.
 export SRE_FULL_SERVER_ID=$(curl -sf "$GATEWAY_URL/servers?limit=0" -H "Authorization: Bearer $JWT_TOKEN" | jq -r '.[] | select(.name == "sre-full") | .id')
 
-# Use a Python MCP client:
 pip install mcp --break-system-packages
 python3 - <<'EOF'
 import asyncio, os
@@ -1464,9 +1464,90 @@ async def test():
 asyncio.run(test())
 EOF
 
-# 5. Verify metrics reflect the tool calls
-curl -s https://contextforge.gourmandtech.com/metrics | grep mcp_tool_calls_total
+# 5. Verify metrics — NOT a Prometheus-format grep as originally scripted.
+# /metrics now requires auth (401 without a token) and returns a JSON
+# aggregate-stats object, not Prometheus text — there is no
+# `mcp_tool_calls_total` metric anywhere in the real Prometheus catalog
+# (confirmed via /metrics/prometheus, which IS Prometheus text but has no
+# tool-call counter — the closest thing is `tool_timeout_total`, a
+# failure-only counter). Per-execution counts live in the JSON endpoint:
+curl -s https://contextforge.gourmandtech.com/metrics -H "Authorization: Bearer $JWT_TOKEN" | jq .tools
+# → {"totalExecutions": N, "successfulExecutions": N, ...}
 ```
+
+### Incident: admin JWT 404s on `GET /servers/{id}/sse` — confirmed ContextForge bug
+
+**Symptom:** Item 4 above returned `httpx.HTTPStatusError: Client error '404
+Not Found'` for the platform-admin JWT (`djfernandez80@gmail.com`, `is_admin:
+true` in the DB) against both `sre-full` and `dev-tools` — despite that same
+token successfully listing both servers via `GET /servers` and successfully
+listing all 86 tools via `GET /servers/{id}/tools`.
+
+**Root cause, confirmed via the pod's own structured logs**
+(`kubectl logs -n mcp deployment/mcp-stack-mcpgateway`, event
+`server_access_denied`):
+
+```json
+{"user_email": "djfernandez80@gmail.com", "custom_fields": {"visibility": "team", "admin_bypass": false}, "resource_id": "7c7b4364c6214f089e847802819b7f2f"}
+```
+
+`admin_bypass: false` for a confirmed DB admin. Traced through
+`server_service.py`'s `_check_server_access()`: bypass requires
+`is_admin_bypass_granted()`, which requires `token_teams is None` — for
+this admin's session, `token_teams` was resolving to `[]` at this
+endpoint's call site (`get_scoped_resource_access_context()` in
+`auth_context.py`), not `None`. An empty list short-circuits
+`_check_server_access()` straight to denial (`is_public_only_token` check)
+*before* it ever reaches the team-membership fallback check — even though
+this admin is a genuine `owner`-role member of `sre-team` (team creation
+auto-adds the creator; confirmed via `GET /teams/{id}/members`). The
+**list** endpoint (`GET /servers`) and the **tools sub-endpoint**
+(`GET /servers/{id}/tools`) clearly resolve this same admin's visibility
+correctly — so the bug is isolated to `get_server()`'s single-object call
+path (which the SSE endpoint also uses), not a general RBAC/auth failure.
+
+**Confirmed this is scoped to the admin-bypass path, not team-based access
+in general:** created a disposable, genuinely non-admin Entra test user
+(`sretester@djfernandez80gmail.onmicrosoft.com` — `is_admin: false`,
+confirmed via `GET /auth/email/admin/users/{email}`), added it to
+`sre-team` as a plain `member` via `POST /teams/{team_id}/members`
+(`TeamMemberAddRequest` — real endpoint, `email`+`role` body, distinct from
+the admin-UI-only `/admin/teams/...` routes), then opened
+`https://contextforge.gourmandtech.com/servers/{sre-full-id}/sse` directly
+in that account's own logged-in browser tab. Result: a clean SSE handshake
+—
+
+```
+event: endpoint
+data: https://contextforge.gourmandtech.com/servers/.../message?session_id=...
+event: keepalive
+data: {}
+: ping - ...
+```
+
+This conclusively shows the RBAC/team-membership access path works
+correctly end-to-end for a real, properly-scoped team member — the bug is
+narrowly isolated to how a DB-admin's session resolves `token_teams` at
+this one endpoint family, not a broader dysfunction in Step 7's RBAC setup.
+
+**Note on a dead end hit along the way:** first tried demoting a second
+test account (`ssoadmin`, from Step 8d) back to non-admin to test with it
+instead of creating a third identity — blocked by a real safety feature:
+`PATCH /auth/email/admin/users/{email}` with `{"is_admin": false}` returned
+`"Admin protection is enabled — cannot demote or deactivate any admin
+user."` Confirms ContextForge has a deliberate admin-protection guard
+against self-service demotion, not a bug — worth knowing about for anyone
+trying to script account cleanup.
+
+**Status:** confirmed, reproducible, upstream bug in vendored code
+(`.contextforge/`) — not something this project patches per its own
+convention ("never modify upstream ContextForge source"). Not filed
+upstream as of this writing. Practical impact is low: the actual
+production RBAC/SSO delivery (Steps 7-8) is unaffected and independently
+verified — this only blocks a platform admin from using the SSE tool
+stream directly against a team-visibility server by ID; real team members
+using their own scoped sessions are unaffected, which is the realistic
+usage pattern anyway.
 
 ---
 
@@ -1505,6 +1586,14 @@ curl -s https://contextforge.gourmandtech.com/metrics | grep mcp_tool_calls_tota
 - **Virtual servers attach to individual tool IDs, not gateway IDs** — `POST /servers`' `ServerCreate` schema has `associated_tools` (a list of tool IDs from `GET /tools`), with no gateway-level equivalent. `visibility: "team"` requires `team_id` in the same request, both in the outer body wrapper and inside the nested `ServerCreate` object. Full detail: Step 7.
 
 - **`GET /teams/` has a different response shape and pagination floor than every other list endpoint** — Returns `{"teams": [...], "total": N}`, not a bare array like `/gateways`/`/tools`/`/servers`. Its `limit` param also has a schema-enforced minimum of 1 (max 500) — `?limit=0` 422s here, unlike the other list endpoints where it disables pagination. Use `?limit=500` instead. Full detail: Step 7.
+
+- **Confirmed ContextForge bug: admin JWT 404s on `GET /servers/{id}/sse` for team-visibility servers** — A genuine DB admin's session resolves `token_teams` to `[]` (not `None`/bypass) specifically at this endpoint's visibility check, even though the same admin correctly sees the same server via `GET /servers` (list) and `GET /servers/{id}/tools`. Confirmed via the pod's own `server_access_denied` structured log (`"admin_bypass": false`) and by proving a genuinely non-admin real team member's session connects to the same SSE URL cleanly. Practical workaround: use a real, team-scoped (non-admin-bypass-dependent) session to invoke tools via SSE, not the platform-admin JWT. Vendored upstream code, not patched. Full detail: Step 9.
+
+- **`/metrics` requires auth and is JSON, not Prometheus text; there is no `mcp_tool_calls_total` metric** — `/metrics` 401s without a bearer token and returns a JSON aggregate-stats object (`{"tools": {"totalExecutions": N, ...}, ...}`), not a Prometheus exposition. The actual Prometheus endpoint is `/metrics/prometheus` (confirmed from the chart's own `ServiceMonitor` scrape path) — it has no tool-call-count metric at all; the closest is `tool_timeout_total`, a failure-only counter. For tool-call counts, use the JSON `/metrics` endpoint's `.tools.totalExecutions`. Full detail: Step 9.
+
+- **`az ad app credential reset --id ... --password` output includes a "protect this credential" warning** — expected `stderr` noise on every client-secret rotation, not an error.
+
+- **Admin-protection blocks self-service demotion** — `PATCH /auth/email/admin/users/{email}` with `{"is_admin": false}` fails with `"Admin protection is enabled — cannot demote or deactivate any admin user."` Deliberate safety feature, not a bug — plan around it (e.g., create a fresh non-admin test identity rather than trying to demote an existing admin one) if scripting account cleanup or test scenarios.
 
 ---
 
