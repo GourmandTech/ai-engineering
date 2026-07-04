@@ -36,7 +36,7 @@ CLAUDE.md sub-task 4 alone, plus the two cross-cutting sub-tasks 5-6.
 | GitHub MCP | `github/github-mcp-server` (official, self-hosted) | stdio via `mcpgateway.translate` wrapper | ✅ Running in AKS + registered in ContextForge |
 | Azure DevOps MCP | `microsoft/azure-devops-mcp` (official) | stdio via `mcpgateway.translate` wrapper | ✅ Running in AKS + registered in ContextForge (40 tools) |
 | Kubernetes MCP | `containers/kubernetes-mcp-server` (Red Hat/containers, native SSE — no wrapper) | SSE (native) | ✅ Running in AKS + registered in ContextForge (13 tools) |
-| Prometheus MCP | `pab1it0/prometheus-mcp-server` (community, native SSE — no wrapper) | SSE (native) | 🔄 kube-prometheus-stack installed, ServiceAccount manifest bug found+fixed (Step 5) — re-deploy + registration pending |
+| Prometheus MCP | `pab1it0/prometheus-mcp-server` (community, native SSE — no wrapper) | SSE (native) | ✅ Running in AKS + registered in ContextForge (6 tools) |
 
 ---
 
@@ -1028,49 +1028,111 @@ pulling this fix — the earlier 50-item results in this runbook's Step 5
 
 ## Step 7 — Configure RBAC
 
-ContextForge ships with 4 built-in roles: `admin`, `manager`, `user`, `viewer`.
+**Status: ✅ COMPLETE 2026-07-04.** Teams `sre-team` and `dev-team` created,
+virtual servers `sre-full` (86 tools, all 5 gateways) and `dev-tools` (62
+tools, GitHub + Azure DevOps only) created and confirmed live via
+`mcp-list-teams`/`mcp-list-servers`. Both open questions from the prior
+draft of this section were resolved against the live `/openapi.json` before
+anything was created:
+
+1. **How does a virtual server attach to gateways/tools?** Not via gateways
+   at all — `ServerCreate`'s `associated_tools` field takes a list of
+   individual **tool IDs**. There is no gateway-level association field.
+   Workflow: `GET /tools?limit=0` returns each tool's `id` and `gatewaySlug`
+   (confirmed equal to the gateway's registered `name`, e.g. `github-mcp`);
+   filter by `gatewaySlug` to build the tool-ID list for a given server.
+2. **Does `visibility: "team"` require a `team_id`?** Yes — confirmed in
+   both `Body_create_server_servers_post` (the top-level POST body wrapper,
+   which also independently accepts `team_id`/`visibility` as query-style
+   fields) and inside the nested `ServerCreate` object itself. Both places
+   need the same `team_id` set, or the server does not end up scoped to
+   the team.
+
+Two more real bugs found while running this step for real (beyond the two
+open questions above, which weren't bugs so much as unknowns):
+
+3. **`POST /teams` (no trailing slash) does not exist** — only
+   `POST /teams/` does. Confirmed from `/openapi.json`'s path list: no bare
+   `/teams` key, only `/teams/`, `/teams/discover`, `/teams/{team_id}`, etc.
+   Calling the bare path 404s.
+4. **`GET /teams/` does not return a bare array** — unlike `/gateways`,
+   `/tools`, and `/servers`, it returns `{"teams": [...], "total": N}`.
+   `mcp-list-teams` treats the response accordingly (`.teams[]`, not
+   `.[]`). A related pagination quirk: `/teams/`'s `limit` query param has
+   a schema-enforced `minimum: 1` (max 500) — the `?limit=0`
+   disable-pagination trick that works on `/gateways`/`/tools`/`/servers`
+   **422s here instead**. `mcp-list-teams` uses `?limit=500` (the max)
+   instead of `?limit=0`.
 
 ### 7a — Create Teams
 
 ```bash
-# Create an SRE team (endpoint: POST /teams)
-curl -sX POST $GATEWAY_URL/teams \
+export JWT_TOKEN=$(make mcp-get-token)
+
+# SRE team — full gateway access
+make mcp-create-team TEAM_NAME=sre-team TEAM_DESC="SRE engineers — full gateway access" JWT_TOKEN=$JWT_TOKEN
+# → id 64be6990afc14d69890d7fb6a33c94a7
+
+# Dev team — GitHub + ADO access only
+make mcp-create-team TEAM_NAME=dev-team TEAM_DESC="Developers — GitHub and Azure DevOps access only" JWT_TOKEN=$JWT_TOKEN
+# → id 555c6cf678884774a65ed7725488baf2
+
+make mcp-list-teams JWT_TOKEN=$JWT_TOKEN
+```
+
+Equivalent direct `curl` (endpoint: `POST /teams/` — note the trailing slash, see finding 3 above):
+
+```bash
+curl -sX POST $GATEWAY_URL/teams/ \
   -H "Authorization: Bearer $JWT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name": "sre-team", "description": "SRE engineers — full gateway access"}' | jq .
-
-# Create a dev team with limited access
-curl -sX POST $GATEWAY_URL/teams \
-  -H "Authorization: Bearer $JWT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "dev-team", "description": "Developers — GitHub and ADO access only"}' | jq .
 ```
 
 ### 7b — Create Virtual Servers with RBAC
 
-Virtual servers (called "Servers" in ContextForge) expose a subset of gateways to specific teams. Endpoint: `POST /servers`.
+Virtual servers (called "Servers" in ContextForge) expose a specific list
+of **tools** — not gateways — to a team. Endpoint: `POST /servers`.
+`mcp-create-server` takes `GATEWAYS` as a comma-separated list of gateway
+names for convenience, but resolves it to individual tool IDs (via each
+tool's `gatewaySlug`) before building the request body — see finding 1
+above for why.
 
 ```bash
-# Get gateway IDs first
-curl -s $GATEWAY_URL/gateways -H "Authorization: Bearer $JWT_TOKEN" | jq '[.[] | {name, id}]'
+# SRE virtual server — all 5 gateways, 86 tools total
+make mcp-create-server SERVER_NAME=sre-full \
+  SERVER_DESC="Full SRE toolset — all registered gateways" \
+  TEAM_ID=64be6990afc14d69890d7fb6a33c94a7 \
+  GATEWAYS=sre-toolbox,github-mcp,azure-devops-mcp,kubernetes-mcp,prometheus-mcp \
+  JWT_TOKEN=$JWT_TOKEN
+# → id 7c7b4364c6214f089e847802819b7f2f, 86 tools attached, team: sre-team
 
-# SRE virtual server — all gateways
+# Dev virtual server — GitHub + ADO only, 62 tools total
+make mcp-create-server SERVER_NAME=dev-tools \
+  SERVER_DESC="Developer tools — GitHub and Azure DevOps only" \
+  TEAM_ID=555c6cf678884774a65ed7725488baf2 \
+  GATEWAYS=github-mcp,azure-devops-mcp \
+  JWT_TOKEN=$JWT_TOKEN
+# → id 86c6565d348848f195d1b41640432a35, 62 tools attached, team: dev-team
+
+make mcp-list-servers JWT_TOKEN=$JWT_TOKEN
+```
+
+Equivalent direct `curl` for one server (endpoint: `POST /servers`; body wraps `ServerCreate` under a `server` key, alongside top-level `team_id`/`visibility`):
+
+```bash
 curl -sX POST $GATEWAY_URL/servers \
   -H "Authorization: Bearer $JWT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "sre-full",
-    "description": "Full SRE toolset — all registered gateways",
-    "visibility": "team"
-  }' | jq .
-
-# Dev virtual server — GitHub + ADO only
-curl -sX POST $GATEWAY_URL/servers \
-  -H "Authorization: Bearer $JWT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "dev-tools",
-    "description": "Developer tools — GitHub and Azure DevOps only",
+    "server": {
+      "name": "sre-full",
+      "description": "Full SRE toolset — all registered gateways",
+      "associated_tools": ["<tool-id-1>", "<tool-id-2>", "..."],
+      "visibility": "team",
+      "team_id": "64be6990afc14d69890d7fb6a33c94a7"
+    },
+    "team_id": "64be6990afc14d69890d7fb6a33c94a7",
     "visibility": "team"
   }' | jq .
 ```

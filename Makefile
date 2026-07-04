@@ -7,6 +7,7 @@
         kubernetes-mcp-deploy \
         prometheus-mcp-deploy \
         mcp-get-token mcp-list-gateways mcp-list-tools mcp-register-sre mcp-register-github mcp-register-azure-devops mcp-register-kubernetes mcp-register-prometheus \
+        mcp-create-team mcp-list-teams mcp-create-server mcp-list-servers \
         lint clean
 
 # ─────────────────────────────────────────────────────────────
@@ -512,6 +513,59 @@ mcp-register-prometheus: ## Register Prometheus MCP gateway (JWT_TOKEN required 
 	  -H "Content-Type: application/json" \
 	  -d '{"name":"prometheus-mcp","url":"http://prometheus-mcp-server.mcp.svc.cluster.local:8000/sse","transport":"SSE","description":"Prometheus — PromQL queries, metric/target discovery (self-hosted, in-cluster, no auth — network-policy-scoped trust boundary)","tags":["prometheus","metrics","observability","sre"],"visibility":"public"}' \
 	  | jq .
+
+# ─────────────────────────────────────────────────────────────
+# RBAC — Teams + Virtual Servers (Phase 4 sub-task 5 / runbook Step 7)
+#
+# Verified live 2026-07-04 against $(GATEWAY_URL)/openapi.json and confirmed
+# by actually creating sre-team/dev-team + sre-full/dev-tools. Three real
+# findings that corrected an earlier unverified draft of this section:
+#   1. POST /teams — no bare path exists, only POST /teams/ (trailing slash).
+#   2. GET /teams/ returns {"teams": [...], "total": N}, NOT a bare array
+#      like /gateways, /tools, /servers — needs its own jq shape.
+#   3. Virtual servers attach to individual TOOL IDs (ServerCreate's
+#      associated_tools), not gateway IDs — there is no gateway-level
+#      association field. visibility:"team" requires team_id in the same
+#      POST body (both at the Body_create_server_servers_post wrapper level
+#      and inside the nested ServerCreate object).
+# Also: GET /teams/'s `limit` param has a schema minimum of 1 (max 500) —
+# unlike /gateways, /tools, /servers, `?limit=0` 422s here instead of
+# disabling pagination. Use an explicit `?limit=500` instead.
+# ─────────────────────────────────────────────────────────────
+mcp-create-team: ## Create an RBAC team (TEAM_NAME, TEAM_DESC, JWT_TOKEN required)
+	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
+	@test -n "$(TEAM_NAME)" || (echo "Usage: make mcp-create-team TEAM_NAME=sre-team TEAM_DESC='...' JWT_TOKEN=..." && exit 1)
+	curl -sX POST $(GATEWAY_URL)/teams/ \
+	  -H "Authorization: Bearer $(JWT_TOKEN)" \
+	  -H "Content-Type: application/json" \
+	  -d "{\"name\": \"$(TEAM_NAME)\", \"description\": \"$(TEAM_DESC)\"}" \
+	  | jq .
+
+mcp-list-teams: ## List all RBAC teams (JWT_TOKEN required)
+	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
+	@# @-silenced, same reasoning as mcp-list-gateways/mcp-list-tools above.
+	@# Response is {"teams": [...], "total": N} — not a bare array. And
+	@# `?limit=0` 422s here (schema minimum is 1); use the max, 500, instead.
+	@curl -sf "$(GATEWAY_URL)/teams/?limit=500" \
+	  -H "Authorization: Bearer $(JWT_TOKEN)" | jq '[.teams[] | {id, name, description, visibility}]'
+
+mcp-create-server: ## Create a virtual server scoped to a team, attaching all tools from one or more gateways (SERVER_NAME, SERVER_DESC, TEAM_ID, GATEWAYS required; JWT_TOKEN required)
+	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
+	@test -n "$(SERVER_NAME)" || (echo "Usage: make mcp-create-server SERVER_NAME=sre-full SERVER_DESC='...' TEAM_ID=... GATEWAYS=sre-toolbox,github-mcp JWT_TOKEN=..." && exit 1)
+	@test -n "$(TEAM_ID)" || (echo "TEAM_ID required — look one up with: make mcp-list-teams JWT_TOKEN=..." && exit 1)
+	@test -n "$(GATEWAYS)" || (echo "GATEWAYS required — comma-separated gateway names (matched against each tool's gatewaySlug), e.g. GATEWAYS=github-mcp,azure-devops-mcp" && exit 1)
+	@TOOL_IDS=$$(curl -sf "$(GATEWAY_URL)/tools?limit=0" -H "Authorization: Bearer $(JWT_TOKEN)" \
+	  | jq -c --arg gws "$(GATEWAYS)" '[.[] | select(($$gws | split(",") | index(.gatewaySlug)) != null) | .id]'); \
+	curl -sX POST $(GATEWAY_URL)/servers \
+	  -H "Authorization: Bearer $(JWT_TOKEN)" \
+	  -H "Content-Type: application/json" \
+	  -d "{\"server\": {\"name\": \"$(SERVER_NAME)\", \"description\": \"$(SERVER_DESC)\", \"associated_tools\": $$TOOL_IDS, \"visibility\": \"team\", \"team_id\": \"$(TEAM_ID)\"}, \"team_id\": \"$(TEAM_ID)\", \"visibility\": \"team\"}" \
+	  | jq .
+
+mcp-list-servers: ## List all virtual servers (JWT_TOKEN required)
+	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
+	@curl -sf "$(GATEWAY_URL)/servers?limit=0" \
+	  -H "Authorization: Bearer $(JWT_TOKEN)" | jq '[.[] | {id, name, teamId, team, visibility, toolCount: (.associatedTools | length)}]'
 
 # ─────────────────────────────────────────────────────────────
 # Quality & Maintenance
