@@ -47,8 +47,8 @@ Claude / Copilot / agent
         │
         ▼
 ContextForge Gateway (https://contextforge.gourmandtech.com)
-  ├── RBAC: teams (sre-team, dev-team, readonly)
-  ├── Entra ID SSO (OIDC)
+  ├── RBAC: teams (sre-team, dev-team) + virtual servers (sre-full, dev-tools) ✅
+  ├── Entra ID SSO (OIDC) ✅
   ├── API key auth for service accounts
         │
         ├── GitHub MCP ────────── (SSE → api.github.com)
@@ -1403,6 +1403,20 @@ Full tutorial: `https://ibm.github.io/mcp-context-forge/manage/sso-microsoft-ent
 
 ## Step 9 — End-to-End Smoke Test
 
+**Status: 🔄 PARTIALLY VERIFIED, not yet run as its own pass.** Items 1-3
+below (health, gateway list, tool list) and a subset of item 5-equivalent
+checks (login/session regression) were exercised incidentally while
+verifying Steps 6 and 8, but the full script below — specifically item 4
+(tool invocation via the MCP SSE protocol) — has not been run end-to-end
+in one pass. Also fixed below: the original draft pointed at
+`/servers/default/sse`, but there is no server named `default` — `GET
+/servers/{server_id}/sse` looks servers up by ID only (`server_service.py`
+`get_server()` does a primary-key `db.get()`, not a name lookup), and the
+real servers created in Step 7 are `sre-full`
+(`7c7b4364c6214f089e847802819b7f2f`) and `dev-tools`
+(`86c6565d348848f195d1b41640432a35`) — look the current IDs up via `make
+mcp-list-servers` rather than assuming these stay stable.
+
 ```bash
 # 1. Health check
 curl -s https://contextforge.gourmandtech.com/health | jq .
@@ -1417,7 +1431,11 @@ make mcp-list-tools JWT_TOKEN=$JWT_TOKEN
 
 # 4. Invoke a tool via MCP SSE protocol
 # There is no REST POST /tools/call endpoint — tool invocation goes through
-# the MCP SSE stream at /servers/{server_id}/sse.
+# the MCP SSE stream at /servers/{server_id}/sse, where {server_id} is a
+# real virtual server ID (from `make mcp-list-servers`) — there is no
+# server literally named "default"; the lookup is by ID only.
+export SRE_FULL_SERVER_ID=$(curl -sf "$GATEWAY_URL/servers?limit=0" -H "Authorization: Bearer $JWT_TOKEN" | jq -r '.[] | select(.name == "sre-full") | .id')
+
 # Use a Python MCP client:
 pip install mcp --break-system-packages
 python3 - <<'EOF'
@@ -1426,10 +1444,11 @@ from mcp import ClientSession
 from mcp.client.sse import sse_client
 
 JWT = os.environ["JWT_TOKEN"]
+SERVER_ID = os.environ["SRE_FULL_SERVER_ID"]
 
 async def test():
     async with sse_client(
-        "https://contextforge.gourmandtech.com/servers/default/sse",
+        f"https://contextforge.gourmandtech.com/servers/{SERVER_ID}/sse",
         headers={"Authorization": f"Bearer {JWT}"}
     ) as (r, w):
         async with ClientSession(r, w) as session:
@@ -1461,11 +1480,11 @@ curl -s https://contextforge.gourmandtech.com/metrics | grep mcp_tool_calls_tota
 
 - **SSRF protection blocks cluster-internal URLs** — Registering an in-cluster URL like `http://sre-mcp-server.mcp.svc.cluster.local:8000/sse` fails with `"Gateway URL contains private network address which is blocked by SSRF protection"`. Fix (already applied in `values.azure.yaml`): scope to cluster CIDRs only — `SSRF_ALLOW_PRIVATE_NETWORKS: "false"` + `SSRF_ALLOWED_NETWORKS: '["10.1.0.0/16", "10.0.0.0/22"]'` (service CIDR + pod subnet). Blanket `SSRF_ALLOW_PRIVATE_NETWORKS: "true"` works but allows all RFC 1918. Cloud metadata (`169.254.169.254`) stays blocked via `SSRF_BLOCKED_NETWORKS` regardless. This is a ConfigMap value — pod restart required for it to take effect (see above).
 
-- **No `/v1/` prefix on any management REST endpoint** — All ContextForge REST management endpoints are at the root, not under `/v1/`. Correct paths: `POST /gateways`, `GET /tools`, `POST /teams`, `POST /servers`. Confirmed from source: each `APIRouter` defines its own prefix and is included directly on the app. `/v1/gateways` returns `{"detail": "Not Found"}`.
+- **No `/v1/` prefix on any management REST endpoint** — All ContextForge REST management endpoints are at the root, not under `/v1/`. Correct paths: `POST /gateways`, `GET /tools`, `POST /teams/` (note: trailing slash required — `POST /teams` with no slash 404s, confirmed from `/openapi.json`'s path list, which has no bare `/teams` key), `POST /servers` (works with or without a trailing slash — both are separately registered routes with the same handler). Confirmed from source: each `APIRouter` defines its own prefix and is included directly on the app. `/v1/gateways` returns `{"detail": "Not Found"}`.
 
 - **Tool naming uses hyphens, not double-underscores** — Confirmed from live output: ContextForge names federated tools as `<gateway-name>-<tool-name>` with underscores in tool names converted to hyphens. Example: `sre-toolbox-sre-healthcheck`, NOT `sre-toolbox__sre_healthcheck` as the docs suggest. Adjust any client-side tool-call strings accordingly.
 
-- **Tool invocation is via SSE protocol, not a REST endpoint** — There is no `POST /tools/call`. Tools are invoked via the MCP SSE stream at `/servers/{server_id}/sse`. Use a Python `mcp` client or `scripts/test-mcp.sh`. The `toolCount: 0` in a fresh registration response is normal — tools are discovered asynchronously after the SSE connection is established.
+- **Tool invocation is via SSE protocol, not a REST endpoint** — There is no `POST /tools/call`. Tools are invoked via the MCP SSE stream at `/servers/{server_id}/sse`, where `{server_id}` must be a real virtual server's ID from `GET /servers` — the lookup is a primary-key `db.get()` (`server_service.py`), not a name match, so there is no server literally named `default`. Use a Python `mcp` client or `scripts/test-mcp.sh`. The `toolCount: 0` in a fresh registration response is normal — tools are discovered asynchronously after the SSE connection is established.
 
 - **Responses are bare JSON arrays** — `GET /gateways` and `GET /tools` return a JSON array directly, not `{"gateways": [...]}`. Use `jq 'length'` and `jq '.[].name'`, not `.tools | length`.
 
@@ -1477,11 +1496,15 @@ curl -s https://contextforge.gourmandtech.com/metrics | grep mcp_tool_calls_tota
 
 - **Gateways default to `visibility=public`** — Confirmed from `GatewayCreate` schema: `visibility` defaults to `"public"`, not `"private"`. Set `"visibility": "public"` explicitly to be clear; set `"visibility": "team"` to restrict to a specific team's virtual server.
 
-- **SSO config goes under `mcpContextForge.config:`, not `env:`** — The chart injects all `config:` values into a ConfigMap which the gateway reads via `envFrom`. There is no `mcpContextForge.env:` key in the chart schema. Non-secret config (including SSO settings) goes under `config:`, secrets go under `secret:`.
+- **SSO config goes under `mcpContextForge.config:`/`secret:`, not `env:`, and every provider is namespaced** — The chart injects `config:` values into a ConfigMap and `secret:` values into a Secret, both read via `envFrom`; there is no `mcpContextForge.env:` key. There is also no generic `SSO_PROVIDER`/`SSO_CLIENT_ID`/`SSO_TENANT_ID`/`SSO_REDIRECT_URI` — confirmed from `.contextforge/mcpgateway/config.py`, ContextForge namespaces every SSO provider's config independently (`SSO_ENTRA_ENABLED`, `SSO_ENTRA_CLIENT_ID`, `SSO_GITHUB_ENABLED`, `SSO_OKTA_ENABLED`, etc.) under one shared `SSO_ENABLED` master switch. Full detail: Step 8.
 
 - **stdio → SSE wrapping** — Many MCP servers (Azure DevOps MCP) only support stdio transport. Use `mcpgateway.translate` (ContextForge's built-in bridge) or a thin container wrapper. See: `https://ibm.github.io/mcp-context-forge/using/mcpgateway-translate/`
 
-- **Entra ID PKCE** — ContextForge auto-enables PKCE for auth code flows. The Entra redirect URI must exactly match what's configured (trailing slash matters).
+- **Entra ID SSO callback path is fixed by the app, not configurable** — `mcpgateway/routers/sso.py` mounts the callback at `/auth/sso/callback/{provider_id}` (`entra` for this provider); there is no `SSO_ENTRA_REDIRECT_URI` setting. The Entra app registration's redirect URI must be set to this exact path (`https://<host>/auth/sso/callback/entra`), confirmed against `login.html`'s own client-side construction of the same URL. PKCE is auto-enabled by ContextForge. Two Entra-specific `az` CLI gaps to know about: `az ad app create` does **not** create the app's Service Principal (`az ad sp create --id <appId>` is a separate required step before permissions/sign-in work), and `az ad app permission grant` requires an explicit `--scope` argument. Full detail, plus two further gotchas only visible via an actual browser login (a tenant user with no `mail` attribute gets no `email` claim at all; ContextForge refuses to auto-link an SSO identity to an existing local-password account with the same email — intentional, not a bug): Step 8d.
+
+- **Virtual servers attach to individual tool IDs, not gateway IDs** — `POST /servers`' `ServerCreate` schema has `associated_tools` (a list of tool IDs from `GET /tools`), with no gateway-level equivalent. `visibility: "team"` requires `team_id` in the same request, both in the outer body wrapper and inside the nested `ServerCreate` object. Full detail: Step 7.
+
+- **`GET /teams/` has a different response shape and pagination floor than every other list endpoint** — Returns `{"teams": [...], "total": N}`, not a bare array like `/gateways`/`/tools`/`/servers`. Its `limit` param also has a schema-enforced minimum of 1 (max 500) — `?limit=0` 422s here, unlike the other list endpoints where it disables pagination. Use `?limit=500` instead. Full detail: Step 7.
 
 ---
 
