@@ -1,6 +1,6 @@
 # Learning Path — IBM ContextForge MCP Gateway on AKS
 
-## Phase 1: Local Docker Compose
+## Phase 1: Local Docker Compose ✅ COMPLETE
 **Goal:** Understand what ContextForge is before touching k8s.
 
 Resources:
@@ -8,15 +8,17 @@ Resources:
 - [Docker Compose Deployment](https://ibm.github.io/mcp-context-forge/latest/deployment/compose/)
 
 Tasks:
-- [ ] Clone IBM/mcp-context-forge
-- [ ] Run `make up`, explore Admin UI at http://localhost:4444
-- [ ] Register a sample MCP server through the UI
-- [ ] Call a tool through the federated endpoint
-- [ ] Read the architecture overview
+- [x] Clone IBM/mcp-context-forge
+- [x] Run `make up`, explore Admin UI at http://localhost:4444
+- [x] Register a sample MCP server through the UI
+- [x] Call a tool through the federated endpoint
+- [x] Read the architecture overview
+
+Confirmed healthy 2026-06-26 (`make test` → `{"status":"healthy"}`). Full detail: `CLAUDE.md` Phase 1 section.
 
 ---
 
-## Phase 2: Minikube
+## Phase 2: Minikube ✅ COMPLETE
 **Goal:** Get k8s reps, understand Helm chart structure.
 
 Resources:
@@ -24,15 +26,17 @@ Resources:
 - [Helm Chart Guide](https://ibm.github.io/mcp-context-forge/latest/deployment/helm/)
 
 Tasks:
-- [ ] `make minikube-start`
-- [ ] Explore the Helm chart values (understand each key section)
-- [ ] `make helm-install` and verify pods come up healthy
-- [ ] Port-forward and run `/mcp-test` against Minikube
-- [ ] Use `/k8s-debug` to intentionally break and fix something
+- [x] `make minikube-start`
+- [x] Explore the Helm chart values (understand each key section)
+- [x] `make helm-install` and verify pods come up healthy
+- [x] Port-forward and run `/mcp-test` against Minikube
+- [x] Use `/k8s-debug` to intentionally break and fix something
+
+Confirmed 2026-06-29 on MacBook Pro M1 (profile `mcpgw`). Full detail + runbooks: `docs/runbooks/helm-install-minikube.md`, `docs/runbooks/minikube-devcontainer-dind.md`.
 
 ---
 
-## Phase 3: Azure AKS
+## Phase 3: Azure AKS ✅ COMPLETE
 **Goal:** Production-grade deployment with Bicep IaC.
 
 Resources:
@@ -40,16 +44,18 @@ Resources:
 - [Scaling ContextForge](https://ibm.github.io/mcp-context-forge/latest/manage/scale/)
 
 Tasks:
-- [ ] Write `infra/bicep/modules/aks.bicep`
-- [ ] Write `infra/bicep/modules/keyvault.bicep` for secrets
-- [ ] Write `infra/helm/values.azure.yaml` with AKS-specific overrides
-- [ ] `make bicep-deploy` → `make helm-aks`
-- [ ] Verify gateway is reachable via AKS LoadBalancer IP
-- [ ] Run `/resume-update`
+- [x] Write `infra/bicep/modules/aks.bicep`
+- [x] Write `infra/bicep/modules/keyvault.bicep` for secrets
+- [x] Write `infra/helm/values.azure.yaml` with AKS-specific overrides
+- [x] `make bicep-deploy` → `make helm-aks`
+- [x] Verify gateway is reachable via AKS LoadBalancer IP
+- [x] Run `/resume-update`
+
+Confirmed 2026-06-30 — live at `https://contextforge.gourmandtech.com` with valid Let's Encrypt TLS, TLSv1.3, HTTP/2, HSTS. 7 hard-won lessons documented in `docs/runbooks/aks-deploy.md` (immutable maxPods, LB SNAT asymmetry, migration Job deadlock, etc.).
 
 ---
 
-## Phase 4: Federated MCP
+## Phase 4: Federated MCP ✅ COMPLETE
 **Goal:** Register multiple MCP servers, implement RBAC and OAuth.
 
 Resources:
@@ -58,16 +64,18 @@ Resources:
 - [Microsoft Entra ID SSO](https://ibm.github.io/mcp-context-forge/latest/manage/sso-microsoft-entra-id-tutorial/)
 
 Tasks:
-- [ ] Register 3+ MCP servers behind the gateway
-- [ ] Configure RBAC: different teams get different tool access
-- [ ] Set up Microsoft Entra ID (Azure AD) OIDC SSO
-- [ ] Test tool calls with scoped JWT tokens
-- [ ] Run `/resume-update`
+- [x] Register 3+ MCP servers behind the gateway — **5 registered**: SRE Toolbox (custom FastMCP), GitHub, Azure DevOps, Kubernetes, Prometheus. 86 tools federated total, verified exact match.
+- [x] Configure RBAC: different teams get different tool access — `sre-team` (virtual server `sre-full`, all 86 tools) and `dev-team` (virtual server `dev-tools`, 62 tools: GitHub + Azure DevOps), scoped via `visibility: "team"` + `associated_tools`.
+- [x] Set up Microsoft Entra ID (Azure AD) OIDC SSO — app `contextforge-sso` registered, SSO login confirmed end-to-end for non-colliding identities.
+- [x] Test tool calls with scoped JWT tokens — live SSE handshake confirmed for a team-scoped, non-admin Entra user (`sretester@...`) added to `sre-team`.
+- [x] Run `/resume-update`
+
+Confirmed complete 2026-07-04, including end-to-end smoke test (health check, gateway list, tool list). Full runbook: `docs/runbooks/phase4-federated-mcp.md` (see its "Numbering scheme" section — the runbook's own Step 0-9 breakdown doesn't map 1:1 to this task list's 1-6). One confirmed upstream ContextForge bug found and documented (not patched, per project convention: never modify vendored `.contextforge/` source): admin-bypass 404 on `GET /servers/{id}` for team-visibility servers.
 
 ---
 
-## Phase 5: Agent Automation
-**Goal:** A2A protocol, multi-agent orchestration.
+## Phase 5: Agent Automation ⬜ IN PROGRESS
+**Goal:** A2A protocol, multi-agent orchestration, and CI/CD to close the loop on the whole platform.
 
 Resources:
 - [A2A Agent Integration](https://ibm.github.io/mcp-context-forge/latest/using/agents/a2a/)
@@ -79,3 +87,5 @@ Tasks:
 - [ ] Implement A2A: one agent delegates sub-tasks to another via the gateway
 - [ ] Add GitHub Actions CI/CD: lint → helm diff → deploy on merge
 - [ ] Run `/resume-update`
+
+See `docs/phase5-plan.md` for the detailed task breakdown (drafted 2026-07-03, pending review).
