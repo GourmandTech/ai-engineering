@@ -192,6 +192,24 @@ module azureDevOpsMcpIdentity 'modules/workload-identity.bicep' = {
   }
 }
 
+// Phase 5.2 — same pattern again, dedicated identity + federated credential
+// scoped to the sre-agent ServiceAccount only. This workload needs two Key
+// Vault secrets the other MCP-server identities don't (anthropic-api-key,
+// sre-agent-jwt-token) — see infra/k8s/sre-agent-secrets-provider.yaml.
+module sreAgentIdentity 'modules/workload-identity.bicep' = {
+  name: 'deploy-sre-agent-identity'
+  scope: rg
+  params: {
+    name: 'id-sre-agent'
+    location: location
+    tags: commonTags
+    oidcIssuerUrl: aks.outputs.oidcIssuerUrl
+    serviceAccountNamespace: 'mcp'
+    serviceAccountName: 'sre-agent'
+    keyVaultId: keyVault.outputs.keyVaultId
+  }
+}
+
 // ── Outputs ──────────────────────────────────────────────────────────────────
 
 @description('Resource group that contains all ContextForge resources')
@@ -223,3 +241,6 @@ output githubMcpIdentityClientId string = githubMcpIdentity.outputs.clientId
 
 @description('Azure DevOps MCP workload identity client ID — use in the ServiceAccount azure.workload.identity/client-id annotation and the SecretProviderClass clientID')
 output azureDevOpsMcpIdentityClientId string = azureDevOpsMcpIdentity.outputs.clientId
+
+@description('SRE agent workload identity client ID — use in the ServiceAccount azure.workload.identity/client-id annotation and the SecretProviderClass clientID')
+output sreAgentIdentityClientId string = sreAgentIdentity.outputs.clientId

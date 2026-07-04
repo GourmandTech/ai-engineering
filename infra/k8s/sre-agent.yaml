@@ -1,0 +1,188 @@
+---
+# SRE Agent (Phase 5.1/5.2) — Kubernetes Deployment + Service
+# Runs inside AKS (mcp namespace). Exposes an HTTP endpoint ContextForge's
+# A2A integration calls into (registered via `make mcp-register-a2a-sre-agent`),
+# and internally connects back out to ContextForge's own `sre-full` virtual
+# server over SSE using its own team-scoped token — this pod is simultaneously
+# an A2A *server* (to the coordinator, via the gateway) and an MCP *client*
+# (to the gateway's federated tools).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sre-agent
+  namespace: mcp
+  labels:
+    app: sre-agent
+    phase: "5"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sre-agent
+  template:
+    metadata:
+      labels:
+        app: sre-agent
+        # Required for the azure-workload-identity mutating webhook — see
+        # azure-devops-mcp-server.yaml for the AADSTS70025 incident this
+        # label exists to avoid repeating.
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: sre-agent
+      containers:
+        - name: sre-agent
+          image: acrcontextforgedev.azurecr.io/sre-agent:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            # In-cluster ClusterIP, not the public https://contextforge.gourmandtech.com
+            # — this pod and the gateway are both in AKS, no need to round-trip
+            # through the internet for the SSE connection. Confirmed the
+            # Service's port mapping via `kubectl get svc mcp-stack-mcpgateway
+            # -n mcp`: port 80 -> targetPort 4444.
+            - name: GATEWAY_URL
+              value: "http://mcp-stack-mcpgateway.mcp.svc.cluster.local:80"
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sre-agent-secrets
+                  key: ANTHROPIC_API_KEY
+            - name: SRE_AGENT_JWT
+              valueFrom:
+                secretKeyRef:
+                  name: sre-agent-secrets
+                  key: SRE_AGENT_JWT
+          volumeMounts:
+            - name: kv-secrets
+              mountPath: /mnt/secrets-store
+              readOnly: true
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - name: kv-secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: sre-agent-kv-secrets
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+---
+# ServiceAccount — no Kubernetes RBAC permissions needed. This workload never
+# talks to the k8s API directly; all infra access happens through ContextForge's
+# already-RBAC'd federated tools (kubernetes-mcp-*, prometheus-mcp-*, etc).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sre-agent
+  namespace: mcp
+  annotations:
+    azure.workload.identity/client-id: "<SRE_AGENT_IDENTITY_CLIENT_ID>"
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sre-agent
+  namespace: mcp
+  labels:
+    app: sre-agent
+spec:
+  selector:
+    app: sre-agent
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+  type: ClusterIP
+---
+# NetworkPolicy — mostly the same baseline shape as azure-devops-mcp-server's,
+# but this workload is the first in the project with a call pattern in BOTH
+# directions: the gateway calls IN here (A2A endpoint invocation, ingress rule
+# below) AND this pod calls OUT to that same gateway (its own MCP/SSE client
+# connection to sre-full, per GATEWAY_URL above) — every prior MCP server only
+# ever received calls from the gateway, never initiated its own.
+#
+# Real bug hit here (found 2026-07-04, Phase 5.2): the first version of this
+# egress block was copy-adapted from azure-devops-mcp-server's, which only
+# ever calls OUT to the public internet — its `namespaceSelector: {}` rule
+# only opens port 53 (DNS), and its public-HTTPS rule explicitly *excludes*
+# 10.0.0.0/8 (which covers the whole AKS service CIDR, 10.1.0.0/16). Neither
+# rule permits reaching another in-cluster pod at all. Result: sre-agent's own
+# SSE connection to the gateway silently hung at `status: pending` forever —
+# confirmed via `kubectl exec ... curl -m 8 http://mcp-stack-mcpgateway...`
+# from inside this pod timing out (exit 28, HTTP:000), while the exact same
+# URL worked instantly from a `kubectl port-forward` test run from outside the
+# cluster network entirely. Fixed by adding a dedicated egress rule below,
+# targeting the gateway pod's real container port (4444 — the Service maps
+# 80->4444, but NetworkPolicy pod-selector rules match the pod's own listening
+# port, not the Service's externally-exposed one).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sre-agent
+  namespace: mcp
+spec:
+  podSelector:
+    matchLabels:
+      app: sre-agent
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app: mcp-stack-mcpgateway
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app: mcp-stack-mcpgateway
+      ports:
+        - protocol: TCP
+          port: 4444
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

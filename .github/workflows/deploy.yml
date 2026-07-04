@@ -1,0 +1,59 @@
+name: Deploy
+
+# Auto-triggers on merge to main, but the `deploy` job runs inside the
+# `production` GitHub Environment, which requires manual reviewer approval
+# before it starts (Settings > Environments > production). This is the
+# confirmed Phase 5.3 pattern: automatic CI (ci.yml), deliberately gated CD —
+# the pipeline starts by itself but pauses before it actually touches Azure.
+#
+# Auth: a SEPARATE Azure OIDC app from ci.yml's (AZURE_CLIENT_ID_DEPLOY, not
+# AZURE_CLIENT_ID_CI) — this one holds Contributor + Role Based Access
+# Control Administrator on rg-contextforge-dev (RBAC Admin because
+# infra/bicep/modules/workload-identity.bicep's per-workload identities each
+# create their own role assignment, which plain Contributor can't do). Its
+# federated credential's subject is `repo:GourmandTech/ai-engineering:environment:production`
+# — scoped so that ONLY a run that has actually entered this gated environment
+# can mint a token from it; a PR run (ci.yml) requesting this app's identity
+# would be rejected by Azure AD before ever reaching this job.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch upstream ContextForge chart
+        run: make chart-fetch
+      - name: Azure login (OIDC, production-scoped)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID_DEPLOY }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+      - name: az bicep install
+        run: az bicep install
+      - name: bicep validate
+        run: make bicep-validate
+      - name: bicep deploy
+        # bicep-deploy has an interactive `read -p` confirmation for manual
+        # runbook use — the real gate here is the Environment's reviewer
+        # approval above, already satisfied by the time this step runs, so
+        # piping the confirmation is correct, not a bypass of anything.
+        run: echo y | make bicep-deploy
+      - name: aks creds
+        run: make aks-creds
+      - name: helm deploy (secrets pulled from Key Vault at deploy time)
+        run: echo y | make helm-aks-secrets KV_NAME=${{ vars.KV_NAME }}
+      - name: verify
+        run: curl -sf https://contextforge.gourmandtech.com/health

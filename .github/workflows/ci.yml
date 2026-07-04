@@ -1,0 +1,50 @@
+name: CI
+
+# Runs on every PR, unguarded — no reviewer approval needed. Uses the
+# read-only-scoped Azure OIDC app (Reader on rg-contextforge-dev only), a
+# deliberately separate identity from deploy.yml's — see deploy.yml's comment
+# for why sharing one identity across both workflows would defeat the gate.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch upstream ContextForge chart (not committed — see Makefile chart-fetch)
+        run: make chart-fetch
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+      - name: make lint (Helm chart + Bicep templates)
+        run: make lint
+
+  helm-diff:
+    name: helm-diff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch upstream ContextForge chart
+        run: make chart-fetch
+      - name: Azure login (OIDC, read-only)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID_CI }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+      - name: Install helm-diff plugin
+        run: helm plugin install https://github.com/databus23/helm-diff
+      - name: make aks-creds
+        run: make aks-creds
+      - name: helm diff against the live AKS release
+        run: make helm-diff-aks
