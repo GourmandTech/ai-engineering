@@ -259,7 +259,16 @@ aks-creds: ## Pull AKS kubeconfig, install kubelogin if missing, and set context
 	kubelogin convert-kubeconfig -l azurecli
 	kubectl config use-context $(AKS_CLUSTER)
 	@echo "✓ Context: $$(kubectl config current-context)"
-	kubectl get nodes
+	@# Best-effort connectivity echo, not a hard gate: Nodes are cluster-scoped,
+	@# and Kubernetes' built-in "view"-equivalent role (what Azure's "AKS RBAC
+	@# Reader" maps to) correctly excludes cluster-scoped resources by design —
+	@# a real-CI identity scoped read-only to the `mcp` namespace's resources
+	@# (what ci.yml's helm-diff actually needs) will legitimately 403 here.
+	@# Failing the whole target over this incidental check would force
+	@# over-privileging that identity for no functional benefit. Callers that
+	@# need actual cluster-admin (e.g. deploy.yml) already have a role that
+	@# passes this.
+	@kubectl get nodes || echo "(kubectl get nodes forbidden for this identity — not fatal, see comment above)"
 
 
 aks-status: ## Show AKS Helm release status and pod health
