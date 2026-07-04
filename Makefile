@@ -292,6 +292,7 @@ helm-aks-secrets: aks-creds ## Deploy ContextForge to AKS, pulling secrets from 
 	  --set "mcpContextForge.secret.PLATFORM_ADMIN_PASSWORD=$$(az keyvault secret show --vault-name $(KV_NAME) --name platform-admin-password --query value -o tsv)" \
 	  --set "mcpContextForge.secret.DEFAULT_USER_PASSWORD=$$(az keyvault secret show --vault-name $(KV_NAME) --name default-user-password --query value -o tsv)" \
 	  --set "mcpContextForge.secret.BASIC_AUTH_PASSWORD=$$(az keyvault secret show --vault-name $(KV_NAME) --name basic-auth-password --query value -o tsv)" \
+	  --set "mcpContextForge.secret.SSO_ENTRA_CLIENT_SECRET=$$(az keyvault secret show --vault-name $(KV_NAME) --name entra-client-secret --query value -o tsv)" \
 	  --wait --timeout=10m
 	@# Force pod restart so ConfigMap changes take effect.
 	@# Helm updates the ConfigMap but does NOT roll pods unless the pod template changes.

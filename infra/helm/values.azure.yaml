@@ -114,6 +114,20 @@ mcpContextForge:
     MIN_SECRET_LENGTH: "32"
     REQUIRE_STRONG_SECRETS: "true"
 
+    # ── SSO — Microsoft Entra ID (Phase 4 sub-task 6 / runbook Step 8) ────────
+    # Real config vars confirmed from .contextforge/mcpgateway/config.py — there
+    # is no generic SSO_PROVIDER/SSO_CLIENT_ID/SSO_TENANT_ID/SSO_REDIRECT_URI;
+    # every provider is namespaced (SSO_ENTRA_*, SSO_GITHUB_*, etc.). The redirect
+    # URI is fixed by the app's own router at /auth/sso/callback/{provider_id}
+    # (provider_id "entra" for this one) — not independently configurable, so
+    # there is no SSO_ENTRA_REDIRECT_URI key. SSO_ENTRA_CLIENT_SECRET is NOT set
+    # here — it comes from Key Vault at `make helm-aks-secrets` time (see that
+    # Makefile target and mcpContextForge.secret below).
+    SSO_ENABLED: "true"
+    SSO_ENTRA_ENABLED: "true"
+    SSO_ENTRA_CLIENT_ID: "628f926c-f973-4959-808b-5a01d41f9097"
+    SSO_ENTRA_TENANT_ID: "c3754182-39f9-49ae-ada5-6aa91b4258a3"
+
   # ── Admin UI ────────────────────────────────────────────────────────────────
   extraEnv:
     - name: MCPGATEWAY_UI_ENABLED
@@ -152,6 +166,7 @@ mcpContextForge:
     MCP_REQUIRE_AUTH: "true"
     MIN_SECRET_LENGTH: "32"
     REQUIRE_STRONG_SECRETS: "true"
+    SSO_ENTRA_CLIENT_SECRET: "" # from KV `entra-client-secret` at helm-aks-secrets time
 
 # ── Fast-time-server ──────────────────────────────────────────────────────────
 # Disabled on single-node dev cluster — frees CPU for gateway and postgres.

@@ -1143,68 +1143,259 @@ See the ContextForge RBAC how-to: `https://ibm.github.io/mcp-context-forge/howto
 
 ## Step 8 — Configure Entra ID SSO (OIDC)
 
+**Status: ✅ COMPLETE 2026-07-04.** App registration, service principal,
+Helm/Makefile wiring, and live deploy all done and verified against
+production. The section below is the corrected, as-run version — the
+original draft got several things wrong, caught only by reading
+`.contextforge/mcpgateway/config.py` and `routers/sso.py` directly instead
+of trusting the docs tutorial:
+
+1. **No generic `SSO_PROVIDER`/`SSO_CLIENT_ID`/`SSO_TENANT_ID`/`SSO_REDIRECT_URI`.**
+   ContextForge namespaces every SSO provider's config
+   (`SSO_GITHUB_*`, `SSO_GOOGLE_*`, `SSO_OKTA_*`, `SSO_ENTRA_*`, ...). The
+   real Entra vars, confirmed from `config.py`: `SSO_ENABLED` (master
+   switch), `SSO_ENTRA_ENABLED`, `SSO_ENTRA_CLIENT_ID`,
+   `SSO_ENTRA_CLIENT_SECRET`, `SSO_ENTRA_TENANT_ID`. There's no
+   `SSO_ENTRA_REDIRECT_URI` either — see next point.
+2. **The callback path is fixed by the app itself, not configurable.**
+   `mcpgateway/routers/sso.py` mounts `sso_router` at prefix `/auth/sso`
+   with a `/callback/{provider_id}` route — so the real callback URL is
+   `/auth/sso/callback/entra` (provider id confirmed as `"entra"` from
+   `sso_service.py`), not `/auth/callback` as drafted. Confirmed against
+   the actual login page too: `mcpgateway/templates/login.html` builds
+   `redirect_uri` client-side as
+   `window.location.origin + "/auth/sso/callback/" + providerId` — this
+   must exactly match the URI registered on the Entra app, or Microsoft
+   rejects the request with `AADSTS50011` (redirect URI mismatch).
+3. **`az ad app create` does not create a Service Principal.** Only the
+   App Registration object. Entra requires the corresponding Service
+   Principal ("Enterprise Application") to exist before `az ad app
+   permission grant` (or any real sign-in) will work — attempting the
+   grant first fails with `ERROR: Resource '' does not exist or one of
+   its queried reference-property objects are not present.` Fix: `az ad
+   sp create --id <appId>` before granting permissions.
+4. **`az ad app permission grant` requires `--scope`.** The draft omitted
+   it; running it as-drafted fails with `the following arguments are
+   required: --scope`. Correct form:
+   `az ad app permission grant --id <appId> --api
+   00000003-0000-0000-c000-000000000000 --scope User.Read`.
+
 ### 8a — Create Entra ID App Registration
 
 ```bash
-# 1. Register app in Entra ID
+# 1. Register app in Entra ID — redirect URI must match the fixed
+#    /auth/sso/callback/{provider_id} path, not an arbitrary one.
 az ad app create \
   --display-name "contextforge-sso" \
   --sign-in-audience AzureADMyOrg \
-  --web-redirect-uris "https://contextforge.gourmandtech.com/auth/callback"
+  --web-redirect-uris "https://contextforge.gourmandtech.com/auth/sso/callback/entra"
 
-# 2. Note the appId (client ID) and tenantId
 APP_ID=$(az ad app list --display-name contextforge-sso --query '[0].appId' -o tsv)
 TENANT_ID=$(az account show --query tenantId -o tsv)
-echo "Client ID: $APP_ID"
-echo "Tenant ID: $TENANT_ID"
+# → APP_ID  = 628f926c-f973-4959-808b-5a01d41f9097
+# → TENANT_ID = c3754182-39f9-49ae-ada5-6aa91b4258a3
 
-# 3. Create a client secret
-CLIENT_SECRET=$(az ad app credential reset --id $APP_ID --query password -o tsv)
-# → Store this in Key Vault immediately:
+# 2. Create the Service Principal — REQUIRED, app create alone does not do this.
+az ad sp create --id $APP_ID
+# → SP object id: c87e9055-bbce-4475-9389-e8a84f1256bb
+
+# 3. Create a client secret and store it in Key Vault immediately —
+#    pipe directly, never let the plaintext value touch a file or the
+#    shell's own scrollback/history.
 az keyvault secret set --vault-name kv-contextforge-dev \
-  --name entra-client-secret --value "$CLIENT_SECRET"
+  --name entra-client-secret \
+  --value "$(az ad app credential reset --id $APP_ID --display-name contextforge-sso-secret --query password -o tsv)"
 
-# 4. Add API permissions: openid, profile, email (User.Read)
+# 4. Add Microsoft Graph User.Read (delegated) and grant admin consent.
+#    --scope is required on the grant call — the earlier draft omitted it.
 az ad app permission add --id $APP_ID \
   --api 00000003-0000-0000-c000-000000000000 \
   --api-permissions e1fe6dd8-ba31-4d61-89e7-88639da4683d=Scope   # User.Read
 az ad app permission grant --id $APP_ID \
-  --api 00000003-0000-0000-c000-000000000000
+  --api 00000003-0000-0000-c000-000000000000 \
+  --scope User.Read
 ```
 
 ### 8b — Add SSO Config to Helm Values (AKS)
 
-Add to `infra/helm/values.azure.yaml` under `mcpContextForge.config:` (not `env:` — this maps to the ConfigMap via `envFrom`):
+Non-secret config goes in `infra/helm/values.azure.yaml` under
+`mcpContextForge.config:` (maps to the ConfigMap via `envFrom`); the
+secret placeholder goes under `mcpContextForge.secret:` (maps to the
+Secret, populated at deploy time — see 8c):
 
 ```yaml
 mcpContextForge:
   config:
     # ... existing config vars ...
     SSO_ENABLED: "true"
-    SSO_PROVIDER: "microsoft"
-    SSO_CLIENT_ID: "<APP_ID>"
-    SSO_TENANT_ID: "<TENANT_ID>"
-    SSO_REDIRECT_URI: "https://contextforge.gourmandtech.com/auth/callback"
-    # SSO_CLIENT_SECRET comes from Key Vault at deploy time (see below)
+    SSO_ENTRA_ENABLED: "true"
+    SSO_ENTRA_CLIENT_ID: "628f926c-f973-4959-808b-5a01d41f9097"
+    SSO_ENTRA_TENANT_ID: "c3754182-39f9-49ae-ada5-6aa91b4258a3"
+  secret:
+    # ... existing secrets ...
+    SSO_ENTRA_CLIENT_SECRET: "" # from KV `entra-client-secret` at helm-aks-secrets time
 ```
 
-Add the client secret at Helm deploy time (or via CSI sync — add `entra-client-secret` to `infra/k8s/secret-provider-class.yaml`):
-
-```bash
-make helm-aks-secrets KV_NAME=kv-contextforge-dev \
-  # Add to Makefile helm-aks-secrets target:
-  # --set "mcpContextForge.secret.SSO_CLIENT_SECRET=$(az keyvault secret show \
-  #   --vault-name kv-contextforge-dev --name entra-client-secret --query value -o tsv)"
-```
+One subtlety verified via `helm template` before deploying for real: the
+chart's own `secret-gateway.yaml` template independently defaults
+`SSO_ENABLED`/`SSO_ENTRA_ENABLED` to `"false"` in the Secret object (since
+our override lives in `config:`, not `secret:`), so the rendered Secret
+and ConfigMap disagree on these keys. This is not a bug in practice —
+`deployment-mcpgateway.yaml`'s `envFrom` lists `secretRef` **before**
+`configMapRef`, and Kubernetes' `envFrom` merge takes the *last* source's
+value on a duplicate key, so the ConfigMap's `"true"` correctly wins. Ran
+`helm template` locally to confirm this before trusting it against
+production — worth re-checking any time a new `SSO_*` key is split across
+`config:`/`secret:` like this one is.
 
 ### 8c — Deploy and Verify SSO
 
 ```bash
 make helm-aks-secrets KV_NAME=kv-contextforge-dev
-
-# Visit in browser — should show Microsoft login button:
-# https://contextforge.gourmandtech.com/admin
+# → adds --set "mcpContextForge.secret.SSO_ENTRA_CLIENT_SECRET=$(az keyvault secret show \
+#     --vault-name kv-contextforge-dev --name entra-client-secret --query value -o tsv)"
+#   to the existing helm upgrade call (see Makefile) — no CSI wiring needed since
+#   this project's real deploy flow is Method B (--set from KV), not CSI sync.
 ```
+
+Verified 2026-07-04, all against the live gateway:
+
+```bash
+curl -s https://contextforge.gourmandtech.com/health | jq .
+# → {"status": "healthy", ...} — pod rolled out clean, 1/1 Running
+
+curl -s https://contextforge.gourmandtech.com/auth/sso/providers | jq .
+# → [{"id":"entra","name":"entra","display_name":"Microsoft Entra ID","authorization_url":null}]
+# `authorization_url: null` here is expected — it's only populated by the
+# actual login-initiation endpoint below, not the static provider list.
+
+curl -s "https://contextforge.gourmandtech.com/auth/sso/login/entra?redirect_uri=https%3A%2F%2Fcontextforge.gourmandtech.com%2Fauth%2Fsso%2Fcallback%2Fentra" | jq -r .authorization_url
+# → https://login.microsoftonline.com/<tenant>/oauth2/v2.0/authorize?client_id=<app-id>&response_type=code
+#     &redirect_uri=https%3A%2F%2Fcontextforge.gourmandtech.com%2Fauth%2Fsso%2Fcallback%2Fentra
+#     &state=...&scope=openid+profile+email+User.Read&code_challenge=...&code_challenge_method=S256&nonce=...
+# Confirms: correct client_id, correct tenant, redirect_uri matches the
+# Entra app registration exactly, PKCE (code_challenge) present, correct
+# OIDC scopes. NOTE: the first attempt at this check used an arbitrary
+# test redirect_uri (.../admin) instead of the real callback path — that
+# would have failed with AADSTS50011 if actually opened in a browser.
+# The redirect_uri passed to this endpoint must be the exact
+# /auth/sso/callback/{provider_id} URL, matching what login.html sends.
+
+make mcp-get-token  # existing email/password (JWT) login still succeeds —
+                     # SSO is additive, not a replacement; no regression.
+```
+
+### 8d — Interactive Browser Login: Two More Real Bugs
+
+The API-level checks in 8c all passed, but the actual click-through at
+`https://contextforge.gourmandtech.com/admin` (done manually, browser-side,
+2026-07-04) surfaced two further issues invisible from the command line —
+both now fixed:
+
+**Bug 1 — missing `email` claim.** First login attempt redirected to
+`/admin/login?error=user_creation_failed`. `authenticate_or_create_user`
+(`sso_service.py`) hard-requires an `email` claim and returns `None`
+immediately if absent — `sso.py` turns that into the generic
+`user_creation_failed` redirect, with no detail surfaced to the browser.
+Root cause, confirmed via `az ad signed-in-user show`: the signed-in Azure
+AD user object had `mail: null`. This tenant is the auto-provisioned
+"Default Directory" for a personal Microsoft account
+(`djfernandez80@gmail.com`) — its user object has no `mail` attribute set,
+and the app registration had no `optionalClaims` configured, so Microsoft's
+ID token had nothing to put in an `email` claim and simply omitted it.
+Fixed with two changes (kept together, not mutually exclusive):
+
+```bash
+# 1. Set the mail attribute directly via Graph (az ad user update has no --mail flag)
+az rest --method PATCH \
+  --uri "https://graph.microsoft.com/v1.0/users/<object-id>" \
+  --headers "Content-Type=application/json" \
+  --body '{"mail": "djfernandez80@gmail.com"}'
+
+# 2. Request "email" as an optional ID-token claim on the app registration
+cat > optional-claims.json <<'EOF'
+{"idToken": [{"name": "email", "essential": false}], "accessToken": [], "saml2Token": []}
+EOF
+az ad app update --id 628f926c-f973-4959-808b-5a01d41f9097 --optional-claims @optional-claims.json
+```
+
+After this fix, server logs (`kubectl logs -n mcp
+deployment/mcp-stack-mcpgateway`, logger `mcpgateway.services.sso_service`)
+confirmed `Token exchange successful for provider entra` — the email claim
+now arrives correctly.
+
+**Bug 2 (really: intended behavior) — account-linking refusal.** Second
+login attempt hit `user_creation_failed` again, but for a different reason
+— confirmed via the same log stream:
+
+```
+SSO authenticate_or_create_user: account-linking required for email
+'djfernandez80@gmail.com' (existing provider='local', incoming='entra').
+```
+
+This is deliberate anti-account-takeover behavior, not a bug:
+`authenticate_or_create_user` refuses to silently link an incoming SSO
+identity to an existing `auth_provider='local'` account with the same
+email (`sso_service.py` line ~2081). The platform-admin account created at
+deploy time (`PLATFORM_ADMIN_EMAIL`) happens to share this email. There is
+**no supported API to change `auth_provider`** on an existing user —
+checked `AdminUserUpdateRequest` (`mcpgateway/schemas.py`), the schema
+backing `PATCH /auth/email/admin/users/{email}`, and it only exposes
+`full_name`, `is_admin`, `is_active`, `email_verified`,
+`password_change_required`, `password` — not `auth_provider`. The only way
+to flip that field is a raw, unsupported SQL `UPDATE` directly against
+Postgres. (Separately confirmed this wouldn't have broken local
+password login even if done — `email_auth_service.py`'s
+`authenticate_user` checks `password_hash` directly and never gates on
+`auth_provider` — but a raw DB mutation with zero app-level validation
+behind it wasn't worth the risk for what's fundamentally a test scenario.)
+
+Resolution: created a second, disposable Entra ID user purely for SSO
+testing rather than fighting the account-linking guard:
+
+```bash
+az ad user create \
+  --display-name "SSO Test Admin" \
+  --user-principal-name "ssoadmin@djfernandez80gmail.onmicrosoft.com" \
+  --password "<random, force-changed on first sign-in>" \
+  --force-change-password-next-sign-in true
+
+# Same missing-mail issue as Bug 1 hits every fresh Azure AD user by default:
+az rest --method PATCH \
+  --uri "https://graph.microsoft.com/v1.0/users/<new-object-id>" \
+  --headers "Content-Type=application/json" \
+  --body '{"mail": "ssoadmin@djfernandez80gmail.onmicrosoft.com"}'
+```
+
+Logging in via SSO with this new identity (in an incognito window, since
+the existing session's cookies interfered) auto-created a fresh
+ContextForge user with no email collision:
+
+```bash
+export JWT_TOKEN=$(make mcp-get-token)
+curl -s "https://contextforge.gourmandtech.com/auth/email/admin/users/ssoadmin@djfernandez80gmail.onmicrosoft.com" \
+  -H "Authorization: Bearer $JWT_TOKEN" | jq .
+# → auth_provider: "entra", is_admin: false — confirms clean auto-create,
+#   no account-linking conflict for a non-colliding email
+
+# Promoted via the supported admin API — no DB edit needed for this part,
+# since is_admin (unlike auth_provider) IS an exposed field on AdminUserUpdateRequest:
+curl -s -X PATCH "https://contextforge.gourmandtech.com/auth/email/admin/users/ssoadmin@djfernandez80gmail.onmicrosoft.com" \
+  -H "Authorization: Bearer $JWT_TOKEN" -H "Content-Type: application/json" \
+  -d '{"is_admin": true}' | jq .
+# → is_admin: true
+```
+
+Note also: the `email_auth_router` used above is mounted at prefix
+`/auth/email` (confirmed from `main.py`'s `app.include_router(...)` call)
+— not `/auth` as a first guess assumed; that first guess 404'd.
+
+**End state:** SSO login is fully working end-to-end for any Entra
+identity that doesn't collide with an existing local account's email.
+`djfernandez80@gmail.com` specifically cannot use SSO login without either
+a raw DB edit (not done, not recommended) or retiring the local admin
+account — this is correct, intended security behavior, not something to
+"fix" further.
 
 Full tutorial: `https://ibm.github.io/mcp-context-forge/manage/sso-microsoft-entra-id-tutorial/`
 
