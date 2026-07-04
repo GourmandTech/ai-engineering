@@ -22,7 +22,7 @@ jobs:
         run: make chart-fetch
       - uses: azure/setup-helm@v4
         with:
-          version: v3.14.0
+          version: v3.21.2
       - name: make lint (Helm chart + Bicep templates)
         run: make lint
 
@@ -39,9 +39,16 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID_CI }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      # Pinned >=3.18.0: databus23/helm-diff's plugin.yaml uses the `platformHooks`
+      # field, which Helm's plugin schema only understands from 3.18.0 onward —
+      # confirmed the field is absent from Helm 3.14-3.17's pkg/plugin/plugin.go
+      # and present from 3.18.0. First real run (2026-07-04) hit this on the
+      # v3.14.0 pin below: "unknown field \"platformHooks\"" made the plugin
+      # install report success but the plugin itself unusable. Re-check this
+      # pin if either Helm or helm-diff jumps a major version again.
       - uses: azure/setup-helm@v4
         with:
-          version: v3.14.0
+          version: v3.21.2
       - name: Install helm-diff plugin
         run: helm plugin install https://github.com/databus23/helm-diff
       - name: make aks-creds

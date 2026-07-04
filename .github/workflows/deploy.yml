@@ -40,7 +40,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - uses: azure/setup-helm@v4
         with:
-          version: v3.14.0
+          version: v3.21.2
       - name: az bicep install
         run: az bicep install
       - name: bicep validate
