@@ -1,0 +1,20 @@
+{
+  "Name": "Deployment Orchestrator (custom, Phase 5 deploy)",
+  "IsCustom": true,
+  "Description": "Grants ONLY the ability to run/validate/what-if a subscription-scoped ARM deployment (main.bicep is `targetScope = 'subscription'` since it creates the resource group itself). Deliberately does not grant any Action on the resources such a deployment creates — that authorization still comes entirely from the existing RG-scoped Contributor + Role Based Access Control Administrator role assignments on rg-contextforge-dev. Azure evaluates 'can this caller run a deployment at this scope' and 'can this caller create the specific resources it declares' as two separate checks, so this role does not widen the deploy app's actual resource-level blast radius beyond that one resource group.",
+  "Actions": [
+    "Microsoft.Resources/deployments/read",
+    "Microsoft.Resources/deployments/write",
+    "Microsoft.Resources/deployments/validate/action",
+    "Microsoft.Resources/deployments/whatIf/action",
+    "Microsoft.Resources/deployments/operations/read",
+    "Microsoft.Resources/deployments/operationstatuses/read",
+    "Microsoft.Resources/subscriptions/resourceGroups/read"
+  ],
+  "NotActions": [],
+  "DataActions": [],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/subscriptions/b5d1ee02-5ad0-44d6-9b14-80e38c714404"
+  ]
+}

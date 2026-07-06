@@ -54,8 +54,9 @@ Full runbook: `docs/runbooks/phase4-federated-mcp.md`
 
 ---
 
-### Phase 5 — IN PROGRESS ⬜ (Agent automation)
-Plan: `docs/phase5-plan.md`. Sequencing: 5.1 → 5.2 → 5.3 → 5.4 (stretch).
+### Phase 5 — IN PROGRESS 🔄 (Agent automation — 5.1-5.3 done, 5.4 stretch remaining)
+Plan: `docs/phase5-plan.md`. Full runbook: `docs/runbooks/phase5-agent-automation.md`.
+Sequencing: 5.1 → 5.2 → 5.3 → 5.4 (stretch).
 
 **5.1 — Simple agent client against the gateway: ✅ COMPLETE 2026-07-04.** `agents/sre-agent/agent.py`
 uses the **Claude Agent SDK** (`ClaudeSDKClient`, not the one-shot `query()` — see bug below) to connect
@@ -164,7 +165,94 @@ coordinator then consolidated into one final answer.
   `A2A_STATS_CACHE_TTL=30`-related, possibly a real tracking gap) — flag if this matters later,
   e.g. for a Phase 5.4 dashboard.
 
-**5.3 — CI/CD (GitHub Actions + OIDC):** not started.
+**5.3 — CI/CD (GitHub Actions + OIDC): ✅ COMPLETE 2026-07-06.** `.github/workflows/ci.yml`
+(unguarded, every PR: `lint` + `helm-diff`) and `.github/workflows/deploy.yml` (merge to `main`,
+gated by a required-reviewer `production` GitHub Environment: `bicep-validate` → `bicep-deploy` →
+`aks-creds` → `helm-aks-secrets`) are live and have both completed a real, full run —
+PR #2 merged, `deploy.yml` approved and green, gateway pod confirmed healthy post-deploy.
+
+**Auth design:** two separate Azure AD app registrations, not one — `ci.yml`'s `helm-diff` runs on
+*every* PR, unguarded; if it shared the deploy app's identity, any PR could mint a
+Contributor-class token before a human ever reviewed anything. `github-actions-contextforge-cicd`
+(federated credential subject `repo:GourmandTech/ai-engineering:environment:production`) is used
+only by the gated deploy job; `github-actions-contextforge-ci-readonly` (subject
+`repo:GourmandTech/ai-engineering:pull_request`) is used only by CI.
+
+**Real platform limitation:** GitHub's required-reviewers Environment protection rule needs GitHub
+Team for private repos — `PUT /repos/.../environments/production` 422'd citing the billing plan.
+This is a personal learning-platform repo with no proprietary content (verified via a
+secret-pattern grep before the change), so made public instead of upgrading billing — required
+reviewers on Environments is free for public repos.
+
+**Every real bug hit getting the first live run green** (each one only surfaced by actually running
+the pipeline against production, not by reasoning about it in the abstract — RBAC/IAM correctness
+for a brand-new pipeline is discovered empirically, one 403 at a time):
+
+1. **Helm plugin schema mismatch.** `helm-diff`'s current release uses Helm's `platformHooks`
+   plugin.yaml field, which Helm's own `pkg/plugin/plugin.go` only gained in **3.18.0** (confirmed
+   directly against Helm's source: absent in 3.14-3.17, present from 3.18.0). Both workflows were
+   pinned to `v3.14.0`. Fixed: bumped to `v3.21.2` in all three `azure/setup-helm@v4` steps.
+2. **`aks-creds`'s own sanity check too strict for a legitimately-scoped identity.** The target's
+   trailing `kubectl get nodes` (originally just a human-facing connectivity echo) 403'd for the CI
+   app's Reader-tier role — correctly, since Nodes are cluster-scoped and Azure's built-in AKS
+   reader roles deliberately exclude cluster-scoped resources. Fixed: made that one line
+   non-fatal (`|| echo ...`) rather than granting node access nobody needed.
+3. **Missing `listClusterUserCredential`.** Plain `Reader` doesn't include this action (same
+   category as storage account `listKeys` — Azure treats credential-listing as more sensitive than
+   generic reads). Fixed: added `Azure Kubernetes Service Cluster User Role` to the CI app.
+4. **Missing Kubernetes-object read.** Fetching credentials isn't the same as being authorized
+   *inside* the cluster — this AKS cluster has Azure RBAC for Kubernetes Authorization enabled, a
+   separate authorization layer from ARM roles. Fixed: added `Azure Kubernetes Service RBAC Reader`.
+5. **Missing Secrets read, and no built-in role offers it read-only.** `helm diff`/`helm get` must
+   read Helm 3's own release state, which is stored *as Kubernetes Secrets* — but Azure's built-in
+   `AKS RBAC Reader` deliberately excludes Secrets entirely (confirmed via its actual `dataActions`
+   list), and the next role up, `AKS RBAC Writer`, bundles full `secrets/*` (read+write), which
+   would have defeated the "safe to run on any unguarded PR" design goal. Fixed: a **custom role**
+   (`docs/runbooks/aks-rbac-reader-plus-secrets-role.json`) — the built-in Reader role's exact
+   `dataActions` plus exactly one addition, the granular
+   `Microsoft.ContainerService/managedClusters/secrets/read` action (confirmed this granular
+   read-only action exists separately from `write`/`delete` via `az provider operation show`).
+6. **Solo maintainer can't review their own PR.** Branch protection's `required_approving_review_count: 1`
+   blocked merge indefinitely — GitHub does not allow self-approval, and `enforce_admins: false`'s
+   admin-bypass didn't surface an obvious escape hatch in practice. Fixed: dropped the count to
+   `0`, kept the required status checks (`lint`, `helm-diff`) as the real gate for a solo-maintained
+   repo — CI still has to pass, there's just no human-approval requirement that can't physically be
+   satisfied by one person.
+7. **Subscription-scope deployment vs. RG-scoped blast-radius goal.** `main.bicep` is
+   `targetScope = 'subscription'` (a Phase 3 decision — it creates the resource group itself), so
+   `az deployment sub validate/create` requires the `Microsoft.Resources/deployments/*` actions at
+   the **subscription** level — Contributor scoped to just `rg-contextforge-dev` doesn't cover
+   this. Granting full subscription Contributor would have defeated the plan's explicit "scope to
+   one RG" goal. Fixed: a second custom role
+   (`docs/runbooks/deployment-orchestrator-role.json`), assignable at the subscription, containing
+   **only** the deployment-orchestration actions (`deployments/read`, `write`,
+   `validate/action`, `whatIf/action`, `operations/read`, `operationstatuses/read`,
+   `subscriptions/resourceGroups/read`) — zero resource-management actions. Azure evaluates "can
+   this caller run a deployment at this scope" and "can this caller create the specific resources
+   it declares" as two independent checks, so this role doesn't widen the deploy app's actual
+   resource-level power beyond the RG-scoped Contributor it already had.
+8. **Key Vault RBAC-auth mode: control-plane ≠ data-plane, and this one actually broke prod
+   briefly.** `helm-aks-secrets` reads each secret via `az keyvault secret show` *from inside the CI
+   job* (not via CSI/pod identity) and passes it to `helm --set`. The deploy app had `Contributor`
+   on the RG, which manages the Key Vault as an ARM resource, but this vault uses **RBAC
+   authorization mode**, where actually reading secret *values* is a separate data-plane role,
+   `Key Vault Secrets User`, that Contributor does not include. Every `az keyvault secret show`
+   call returned `ForbiddenByRbac` — silently, since each was wrapped in `$(...)` — so
+   `JWT_SECRET_KEY`, `AUTH_ENCRYPTION_SECRET`, etc. were all passed to Helm as **empty strings**.
+   The new gateway pod crashlooped (`SecurityConfigurationError: JWT_SECRET_KEY is not
+   configured`) 6 times before this was caught; the *previous* pod kept serving traffic
+   unaffected the whole time (Kubernetes doesn't tear down an old ReplicaSet's pod until the new
+   one is healthy), so there was no actual customer-facing outage — but it's the closest this
+   pipeline came to shipping a broken gateway. Fixed: added `Key Vault Secrets User`, scoped to
+   just the `kv-contextforge-dev` vault (not the RG), to the deploy app.
+
+**Lesson worth generalizing:** every one of the 5 IAM gaps above (#3-5, #7-8) was a *different*
+Azure permission model — subscription vs. RG scope, ARM control-plane vs. Key Vault data-plane,
+generic AKS ARM roles vs. Azure RBAC for Kubernetes Authorization, built-in roles vs. custom roles
+for a granular action — that could only really be found by running the real pipeline against
+production and reading the exact `Forbidden`/`ForbiddenByRbac` error, not by reasoning about "what
+role should this need" in the abstract beforehand.
+
 **5.4 — Observability (stretch):** not started.
 
 ---
