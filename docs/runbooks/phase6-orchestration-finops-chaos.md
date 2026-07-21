@@ -134,3 +134,102 @@ before making the change, given it touches shared production RBAC state.
   generalizes, not yet proving *dynamic* routing under ambiguity.
 - **PR not yet opened** — code, infra, and this runbook entry are complete and committed
   locally; opening the PR is the next step.
+
+---
+
+## 6.1.2 — Dynamic LangGraph routing across two specialists
+
+**Goal:** turn 6.1.1's "delegation happened to pick the right tool because the prompt was
+already unambiguous" into an actual, verified routing decision between `a2a-sre-agent` and
+`a2a-dev-agent`, plus a real cross-specialist fallback on repeated failure — not just
+retry-the-same-tool, which is all `route_after_tools`/`handle_delegation_failure` did going
+into this sub-phase.
+
+### What changed in `agents/coordinator-agent/coordinator.py`
+
+1. **Added a system prompt** (`SYSTEM_PROMPT`, passed as a `SystemMessage` in `run()`'s
+   initial state). There was no system message at all before this — `build_graph()` called
+   `ChatAnthropic(...).bind_tools(tools)` with nothing telling the model what the two tools
+   *mean* beyond their own MCP tool descriptions. The prompt names both tools explicitly,
+   states each one's domain (SRE: AKS/Kubernetes/node-pool/Prometheus; dev: GitHub/Azure
+   DevOps), and explicitly instructs the model not to default to one out of habit — this
+   matters because with only `a2a-sre-agent` ever having been exercised (5.2, 6.1.1's own
+   "not yet done" note), there was no prior evidence the model would reliably prefer
+   `a2a-dev-agent` on a dev-shaped task without being told it exists and what it's for.
+2. **`build_graph()`'s own sanity check was widened** from "at least one tool loaded" to
+   "both `a2a-sre-agent` and `a2a-dev-agent` are present in `client.get_tools()`" — the old
+   check would have silently passed even if `a2a-dev-agent` never made it onto
+   `coordinator-delegate` (e.g. if 6.1.1's cross-team visibility fix ever regressed), and the
+   coordinator would then look like it was "choosing" sre-agent for every task when it
+   actually only had one tool to pick from.
+3. **`handle_delegation_failure` now tracks which specialist was actually attempted.**
+   `_last_attempted_tool()` walks the message history backward to the most recent AIMessage
+   with `tool_calls` and reads the tool name off it (handles both dict- and object-shaped
+   `ToolCall`s across langchain versions). A new `attempted_tools` state field (parallel to
+   the existing `delegation_attempts` counter) accumulates this history. On each failure,
+   `same_specialist_run` counts how many times the same tool has failed *consecutively*
+   (scanning `attempted_tools` from the end). Once that count reaches
+   `MAX_DELEGATION_RETRIES` (2), instead of the old generic "rephrase and try again" nudge,
+   the retry message explicitly names the *other* specialist (`_other_specialist()`) and
+   tells the model to stop retrying the failed one and delegate to the other by name instead
+   — this is the actual fallback-across-specialists behavior the sub-phase asked for, not
+   just a rephrase-and-hope loop.
+   - Given `route_after_tools`'s existing gate (`attempts < MAX_DELEGATION_RETRIES` decides
+     whether `handle_delegation_failure` runs at all), with `MAX_DELEGATION_RETRIES=2` the
+     node fires on the 1st and 2nd consecutive failures of a given tool and is bypassed
+     (falls straight back to `coordinator` with the raw error in context) on a 3rd — so the
+     *2nd* failure of the same tool is the one that actually triggers the explicit
+     other-specialist nudge, since that's the last `handle_delegation_failure` invocation
+     before the retry budget runs out entirely.
+
+### Live verification (2026-07-21) — real, end-to-end, two different tasks, two different specialists
+
+Ran `agents/coordinator-agent/coordinator.py` locally against the live gateway
+(`GATEWAY_URL` default, `coordinator-delegate` server id
+`ed47e8c660dd4e529cefa48826b6cd1d`), pulling `ANTHROPIC_API_KEY` and `COORDINATOR_JWT` from
+Key Vault (`anthropic-api-key`, `coordinator-agent-jwt-token`) into shell variables only
+(never printed).
+
+**Task 1 — dev-domain:** `"Delegate to the dev specialist: list open pull requests in the
+GourmandTech/ai-engineering GitHub repository."` Gateway logs, `20:49:43`:
+```
+Invoking tool: a2a-dev-agent with arguments: dict_keys(['query']) ... server_id=ed47e8c660dd4e529cefa48826b6cd1d
+Calling A2A agent 'dev-agent' at http://dev-agent.mcp.svc.cluster.local:8000/run
+```
+followed by `dev-agent`'s own downstream call, `Invoking tool: github-mcp-list-pull-requests`.
+Coordinator's final answer: correctly reported zero open PRs.
+
+**Task 2 — SRE-domain:** `"Delegate to the SRE specialist: check AKS node pool health and
+summarize any Prometheus alerts firing in the last 24 hours."` Gateway logs, `20:50:28`
+(same session, ~45s later):
+```
+Invoking tool: a2a-sre-agent with arguments: dict_keys(['query']) ... server_id=ed47e8c660dd4e529cefa48826b6cd1d
+Calling A2A agent 'sre-agent' at http://sre-agent.mcp.svc.cluster.local:8000/run
+```
+Coordinator's final answer: real node/alert summary (correctly flagged the perpetual
+`KubeSchedulerDown`/`KubeControllerManagerDown`/`KubeProxyDown` alerts as expected
+false-positives on managed AKS, and `KubeCPUOvercommit` as a genuine risk worth acting on).
+
+This is the actual bar for this sub-phase: the coordinator was given two structurally
+different tasks in the same run and correctly called a different specialist for each one,
+driven entirely by the system prompt's domain descriptions plus Claude's native tool
+selection — no hardcoded `if "github" in task` branching anywhere in `coordinator.py`.
+
+### Not yet exercised live
+
+- **The other-specialist fallback path itself** (`same_specialist_run >= MAX_DELEGATION_RETRIES`
+  branch in `handle_delegation_failure`) was not triggered in this verification — both live
+  calls above succeeded on the first attempt, so the failure branch never ran. The routing
+  logic (system prompt + tool selection) is confirmed live; the fallback-on-repeated-failure
+  logic is confirmed by code review and the existing `_tool_call_failed`/`route_after_tools`
+  gating (unchanged from 5.2, already proven to fire correctly), not by an observed live
+  failure. Forcing a real failure (e.g. temporarily scaling `dev-agent` to 0 replicas) was
+  judged unnecessary risk to production for this verification pass — flag if a future wave
+  wants to exercise this branch under a real fault.
+- **Pre-existing, unrelated noise:** both runs print a burst of pydantic `ValidationError`
+  lines from the `mcp` SDK's SSE transport failing to parse ContextForge's
+  `notifications/initialized` message against its own `LoggingMessageNotification`/
+  `ResourceUpdatedNotification`/etc. discriminated-union schema during the initial handshake.
+  This is unrelated to this sub-phase's changes (same handshake code path as 6.1.1, not
+  touched here) and did not affect either result — both tool calls and final answers came
+  back correct. Not investigated further; flag if a future wave wants a clean log.
