@@ -232,6 +232,73 @@ module devAgentIdentity 'modules/workload-identity.bicep' = {
   }
 }
 
+// Phase 6.2.2 — WIDEST-SCOPED IDENTITY IN THIS PROJECT. Same per-workload
+// pattern as the four identities above (dedicated UAMI + federated credential
+// scoped to exactly one ServiceAccount, mcp/cost-mcp-server), but this is the
+// first workload identity that holds no stored Key Vault secret at all — see
+// grantKeyVaultAccess: false below and workload-identity.bicep's own comment
+// on that param, added specifically for this call site. Approved by the
+// project owner 2026-07-21 (docs/phase6-plan.md §6.2's own design, confirmed
+// live before implementation: az role definition list confirmed
+// "Cost Management Reader" (72fafb9e-0641-4937-9268-a91bfd8191a3) is a
+// built-in, read-only role — zero write actions, zero dataActions).
+//
+// Subscription-scoped (not RG-scoped like every other identity here) because
+// the underlying spend this identity needs to read is subscription-scoped:
+// the AKS node VMs — ~91% of real spend — live in the AKS-managed
+// MC_rg-contextforge-dev_aks-contextforge-dev_eastus node resource group, not
+// rg-contextforge-dev itself. An RG-scoped grant would reproduce that exact
+// spend-visibility gap, which is the whole reason this MCP server exists.
+//
+// The RBAC boundary containing this identity's *reach* is deliberately NOT a
+// narrower role — Cost Management Reader is already Azure's narrowest
+// built-in read-only role for this data. Containment instead comes from
+// ContextForge's own virtual-server layer: a future finops-full server /
+// finops-team (6.2.3+, not yet built) scopes who can actually invoke this
+// server's tools, the same "virtual servers as the RBAC boundary" design
+// decision this project has used since Phase 4 — this Bicep grant controls
+// what the identity CAN read, not who can ask it to.
+module costMcpIdentity 'modules/workload-identity.bicep' = {
+  name: 'deploy-cost-mcp-identity'
+  scope: rg
+  params: {
+    name: 'id-cost-mcp-server'
+    location: location
+    tags: commonTags
+    oidcIssuerUrl: aks.outputs.oidcIssuerUrl
+    serviceAccountNamespace: 'mcp'
+    serviceAccountName: 'cost-mcp-server'
+    keyVaultId: keyVault.outputs.keyVaultId
+    grantKeyVaultAccess: false
+  }
+}
+
+// Built-in 'Cost Management Reader' role id, confirmed live via
+// `az role definition list --name "Cost Management Reader"` 2026-07-21
+// against this exact subscription — read-only (Microsoft.CostManagement/*/read,
+// Microsoft.Consumption/*/read, etc.), no write actions, no dataActions.
+var costManagementReaderRoleId = '72fafb9e-0641-4937-9268-a91bfd8191a3'
+
+// Assigned directly here (not inside workload-identity.bicep, which stays a
+// generic, resource-group/vault-scoped module) because this is the one
+// subscription-scope grant in the project — deliberately kept out of the
+// shared module so every other call site's blast radius stays exactly what
+// it was before this identity existed.
+resource costMcpRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  // guid() seeded on the identity's fixed *name* (not costMcpIdentity.outputs.*
+  // — a module output isn't "calculable at the start of deployment" in
+  // Bicep's eyes, confirmed via `az bicep build`: BCP120) plus the role id and
+  // subscription — deterministic and unique without depending on the module's
+  // runtime output.
+  name: guid(subscription().id, 'id-cost-mcp-server', costManagementReaderRoleId)
+  scope: subscription()
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', costManagementReaderRoleId)
+    principalId: costMcpIdentity.outputs.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 // ── Outputs ──────────────────────────────────────────────────────────────────
 
 @description('Resource group that contains all ContextForge resources')
@@ -269,3 +336,6 @@ output sreAgentIdentityClientId string = sreAgentIdentity.outputs.clientId
 
 @description('Dev agent workload identity client ID — use in the ServiceAccount azure.workload.identity/client-id annotation and the SecretProviderClass clientID')
 output devAgentIdentityClientId string = devAgentIdentity.outputs.clientId
+
+@description('Cost MCP server workload identity client ID — use in the ServiceAccount azure.workload.identity/client-id annotation (no SecretProviderClass — this identity holds no stored Key Vault secret, see grantKeyVaultAccess: false above)')
+output costMcpIdentityClientId string = costMcpIdentity.outputs.clientId

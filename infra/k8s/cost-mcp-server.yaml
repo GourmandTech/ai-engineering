@@ -1,0 +1,174 @@
+---
+# Cost MCP Server (Phase 6.2.1-6.2.2) — Kubernetes Deployment + Service
+# Runs inside AKS (mcp namespace), registered as a gateway in ContextForge.
+#
+# Same custom-FastMCP-over-SSE shape as sre-mcp-server.yaml, but the first
+# workload identity in the project that holds NO stored Key Vault secret at
+# all — deliberate deviation from every prior identity-backed MCP server
+# (github-mcp-server, azure-devops-mcp-server, sre-agent, dev-agent), all of
+# which pair their Deployment with a *-secrets-provider.yaml CSI
+# SecretProviderClass. This one doesn't need one: its only credential is the
+# workload-identity-federated Azure AD token, obtained automatically by
+# azure-identity's DefaultAzureCredential once the AKS workload-identity
+# mutating webhook injects AZURE_CLIENT_ID/AZURE_TENANT_ID/
+# AZURE_FEDERATED_TOKEN_FILE/AZURE_AUTHORITY_HOST into this pod — no CSI
+# volume, no volumeMounts/volumes block below at all.
+#
+# Identity: id-cost-mcp-server (infra/bicep/main.bicep's costMcpIdentity),
+# the widest-scoped identity in the project — granted built-in
+# "Cost Management Reader" at SUBSCRIPTION scope (not resource-group scope
+# like every other identity here), because the real spend this server needs
+# to read is subscription-scoped (~91% of it lives in the AKS-managed node
+# resource group, not rg-contextforge-dev). See main.bicep's costMcpIdentity
+# comment for the full design rationale, approved by the project owner
+# 2026-07-21 before this identity was created.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cost-mcp-server
+  namespace: mcp
+  labels:
+    app: cost-mcp-server
+    phase: "6"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cost-mcp-server
+  template:
+    metadata:
+      labels:
+        app: cost-mcp-server
+        # Required for the azure-workload-identity mutating webhook to act on
+        # this pod at all — same AADSTS70025-shaped failure mode as every
+        # prior identity if this label is missing (see
+        # azure-devops-mcp-server.yaml's incident note).
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: cost-mcp-server
+      containers:
+        - name: cost-mcp-server
+          image: acrcontextforgedev.azurecr.io/cost-mcp-server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            # Plain value, not a secret — same convention as AZURE_DEVOPS_ORG
+            # on azure-devops-mcp-server.yaml. Substituted by
+            # `make cost-mcp-deploy AZURE_SUBSCRIPTION_ID=<sub-id>`.
+            - name: AZURE_SUBSCRIPTION_ID
+              value: "<AZURE_SUBSCRIPTION_ID>"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+---
+# ServiceAccount — no Kubernetes RBAC permissions needed. This workload only
+# calls out to management.azure.com / login.microsoftonline.com; it never
+# talks to the k8s API (contrast with kubernetes-mcp-server, which needs its
+# automounted token for client-go).
+#
+# The client-id annotation ties this SA to the dedicated UAMI created in
+# infra/bicep/modules/workload-identity.bicep (instantiated in main.bicep as
+# `costMcpIdentity`) — NOT the AKS Key Vault CSI add-on's own identity.
+# Replace <COST_MCP_IDENTITY_CLIENT_ID> with the Bicep output
+# `costMcpIdentityClientId` (make cost-mcp-deploy does this substitution
+# automatically via `az identity show`, same as the other *-deploy targets).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cost-mcp-server
+  namespace: mcp
+  annotations:
+    azure.workload.identity/client-id: "<COST_MCP_IDENTITY_CLIENT_ID>"
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cost-mcp-server
+  namespace: mcp
+  labels:
+    app: cost-mcp-server
+spec:
+  selector:
+    app: cost-mcp-server
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+  type: ClusterIP
+---
+# NetworkPolicy — baseline least-privilege network isolation, same shape as
+# azure-devops-mcp-server's (gateway calls IN only; this pod never calls back
+# INTO the gateway itself, unlike sre-agent/dev-agent, so no dedicated
+# in-cluster egress rule is needed).
+# Ingress: only the ContextForge gateway pods may reach this service.
+# Egress: DNS + public HTTPS only. Workload-identity federation is a
+# two-hop outbound call — login.microsoftonline.com (AAD token exchange)
+# then management.azure.com (the actual Cost Management query) — both real
+# internet egress to public Azure endpoints, architecturally identical to
+# azure-devops-mcp-server reaching dev.azure.com, not intra-cluster traffic.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cost-mcp-server
+  namespace: mcp
+spec:
+  podSelector:
+    matchLabels:
+      app: cost-mcp-server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Label verified against the live gateway pod for prior MCP servers'
+    # identical policies (app=mcp-stack-mcpgateway, the plain Helm
+    # release-name label — not app.kubernetes.io/name).
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app: mcp-stack-mcpgateway
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

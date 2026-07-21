@@ -45,6 +45,9 @@ param serviceAccountName string
 @description('Resource ID of the Key Vault to grant read access to')
 param keyVaultId string
 
+@description('Whether to grant this identity Key Vault Secrets User at the vault scope. Default true preserves every existing consumer of this module unchanged (they all hold a stored secret synced via CSI). Set false for a workload that holds no stored secret at all and authenticates purely via workload-identity federation to an Azure API rather than a Key Vault-held credential — added 2026-07-21 for id-cost-mcp-server specifically, so the project\'s widest-scoped identity (subscription-level Cost Management Reader, granted separately in main.bicep) doesn\'t also carry an unused, unrelated grant to read every secret in the vault.')
+param grantKeyVaultAccess bool = true
+
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: name
   location: location
@@ -72,7 +75,16 @@ resource federatedCredential 'Microsoft.ManagedIdentity/userAssignedIdentities/f
 // fine when there's only one vault, but not a pattern worth repeating for a
 // per-workload identity). Requires an `existing` reference since keyVaultId
 // arrives as a resource ID string, not a resource symbol.
-resource kv 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
+// Conditional on grantKeyVaultAccess (default true — every consumer before
+// id-cost-mcp-server holds a stored secret and needs this). Phase 6.2 is the
+// first workload identity in the project holding NO stored secret at all (it
+// authenticates purely via workload-identity federation straight to an Azure
+// API, Cost Management, not via a Key Vault-held credential) — for that one,
+// this grant would be real but entirely unused (ambient read access to every
+// secret in the vault for an identity that never mounts a
+// SecretProviderClass). Set false for that call site specifically rather than
+// leave an unused grant on the project's widest-scoped identity.
+resource kv 'Microsoft.KeyVault/vaults@2023-07-01' existing = if (grantKeyVaultAccess) {
   name: last(split(keyVaultId, '/'))
 }
 
@@ -83,7 +95,7 @@ resource kv 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
 // but verify current API support for that scope format before relying on it.
 var kvSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 
-resource kvRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource kvRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (grantKeyVaultAccess) {
   name: guid(keyVaultId, identity.id, kvSecretsUserRoleId)
   scope: kv
   properties: {
