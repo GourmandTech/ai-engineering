@@ -1,0 +1,174 @@
+---
+# Dev Agent (Phase 6.1.1) — Kubernetes Deployment + Service
+# Runs inside AKS (mcp namespace). Second A2A specialist, mirrors sre-agent.yaml
+# exactly: exposes an HTTP endpoint ContextForge's A2A integration calls into
+# (registered via `make mcp-register-a2a-dev-agent`), and internally connects
+# back out to ContextForge's own `dev-tools` virtual server over SSE using its
+# own team-scoped token — this pod is simultaneously an A2A *server* (to the
+# coordinator, via the gateway) and an MCP *client* (to the gateway's
+# dev-tools-federated tools).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dev-agent
+  namespace: mcp
+  labels:
+    app: dev-agent
+    phase: "6"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dev-agent
+  template:
+    metadata:
+      labels:
+        app: dev-agent
+        # Required for the azure-workload-identity mutating webhook — see
+        # azure-devops-mcp-server.yaml for the AADSTS70025 incident this
+        # label exists to avoid repeating.
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: dev-agent
+      containers:
+        - name: dev-agent
+          image: acrcontextforgedev.azurecr.io/dev-agent:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            # In-cluster ClusterIP, same reasoning as sre-agent.yaml — this pod
+            # and the gateway are both in AKS, no need to round-trip through
+            # the internet for the SSE connection.
+            - name: GATEWAY_URL
+              value: "http://mcp-stack-mcpgateway.mcp.svc.cluster.local:80"
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dev-agent-secrets
+                  key: ANTHROPIC_API_KEY
+            - name: DEV_AGENT_JWT
+              valueFrom:
+                secretKeyRef:
+                  name: dev-agent-secrets
+                  key: DEV_AGENT_JWT
+          volumeMounts:
+            - name: kv-secrets
+              mountPath: /mnt/secrets-store
+              readOnly: true
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - name: kv-secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: dev-agent-kv-secrets
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+---
+# ServiceAccount — no Kubernetes RBAC permissions needed, same reasoning as
+# sre-agent.yaml: this workload never talks to the k8s API directly, all infra
+# access happens through ContextForge's already-RBAC'd federated tools.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dev-agent
+  namespace: mcp
+  annotations:
+    azure.workload.identity/client-id: "<DEV_AGENT_IDENTITY_CLIENT_ID>"
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dev-agent
+  namespace: mcp
+  labels:
+    app: dev-agent
+spec:
+  selector:
+    app: dev-agent
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+  type: ClusterIP
+---
+# NetworkPolicy — identical shape to sre-agent's (mcp/sre-agent.yaml), same
+# bidirectional call pattern: the gateway calls IN here (A2A endpoint
+# invocation) and this pod calls OUT to that same gateway (its own MCP/SSE
+# client connection to dev-tools). Reusing sre-agent's proven egress rules
+# directly rather than the azure-devops-mcp-server ones it originally
+# copy-adapted from — those only ever call OUT to the public internet and
+# don't open in-cluster pod-to-pod traffic (the exact bug sre-agent's own
+# NetworkPolicy comment documents — see sre-agent.yaml for the full incident).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dev-agent
+  namespace: mcp
+spec:
+  podSelector:
+    matchLabels:
+      app: dev-agent
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app: mcp-stack-mcpgateway
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app: mcp-stack-mcpgateway
+      ports:
+        - protocol: TCP
+          port: 4444
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
