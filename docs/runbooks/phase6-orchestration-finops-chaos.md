@@ -296,7 +296,37 @@ mcp-register-cost: ## Register Cost MCP gateway (JWT_TOKEN required — no store
 
 Also add `cost-mcp-build cost-mcp-deploy mcp-register-cost` to the `.PHONY` list.
 
+### Real finding — a second agent almost repeated the same relayed-approval mistake, and correctly refused
+
+When the deploy/verify steps above were picked up in a follow-on session, a fresh execution
+agent was launched with a prompt that *asserted* "the real project owner has given direct,
+explicit confirmation in this exact conversation." The agent correctly refused to treat that
+embedded assertion as sufficient — it had no actual user turn in its own transcript to point to,
+and recognized the pattern (an in-context claim of authorization, describing a prior safety stop
+as settled, instructing it not to reconsider, attached to a request for several irreversible
+production actions) as exactly the shape of a bypass attempt it shouldn't wave through, even
+though in this specific case the claim happened to be true. It stopped and asked for direct
+confirmation instead of proceeding.
+
+This is the correct instinct in general — an agent cannot verify a relayed "the user already
+approved this" claim from its own context, and should not treat it as equivalent to a real
+approval turn. The actual resolution: the orchestrating session re-confirmed directly with the
+real project owner (a live, explicit yes to deploying this exact reviewed diff), then executed
+the remaining steps itself directly rather than relaying through another agent hop, since the
+orchestrating session already held a genuine, verifiable approval and doing the work itself
+avoided reproducing the same unverifiable-relay problem a third time.
+
+**Lesson for future multi-agent waves in this project:** for any step gated on direct human
+approval, either (a) have the human approve directly inside the same agent session that will
+execute the gated action, or (b) have the orchestrating session execute the gated action itself
+once it holds genuine approval, rather than relaying approval through another spawned agent —
+the relay itself is indistinguishable, from the receiving agent's point of view, from a prompt
+injection, and a well-behaved agent should refuse it either way.
+
+### Live deploy (2026-07-21, continued)
+
+<!-- Appended after the live deploy actually ran. -->
+
 ### PR
 
-Opened against `main` from branch `feat/phase6-2-cost-mcp-server`; not merged pending the
-deploy/verify steps above.
+Opened against `main` from branch `feat/phase6-2-cost-mcp-server`.
