@@ -8,7 +8,8 @@
         prometheus-mcp-deploy \
         sre-agent-build sre-agent-deploy \
         dev-agent-build dev-agent-deploy \
-        mcp-get-token mcp-list-gateways mcp-list-tools mcp-register-sre mcp-register-github mcp-register-azure-devops mcp-register-kubernetes mcp-register-prometheus \
+        cost-mcp-build cost-mcp-deploy \
+        mcp-get-token mcp-list-gateways mcp-list-tools mcp-register-sre mcp-register-github mcp-register-azure-devops mcp-register-kubernetes mcp-register-prometheus mcp-register-cost \
         mcp-create-team mcp-list-teams mcp-create-server mcp-list-servers \
         mcp-create-scoped-token sre-agent-get-token coordinator-get-token dev-agent-get-token \
         mcp-register-a2a-sre-agent mcp-register-a2a-dev-agent mcp-attach-a2a-agent \
@@ -360,6 +361,8 @@ SRE_AGENT_IMAGE  ?= sre-agent
 SRE_AGENT_TAG    ?= latest
 DEV_AGENT_IMAGE  ?= dev-agent
 DEV_AGENT_TAG    ?= latest
+COST_MCP_IMAGE   ?= cost-mcp-server
+COST_MCP_TAG     ?= latest
 # No build vars for Kubernetes MCP — deployed straight from the upstream
 # public image (quay.io/containers/kubernetes_mcp_server), no wrapper to
 # build/push to ACR. See infra/k8s/kubernetes-mcp-server.yaml header.
@@ -408,6 +411,14 @@ dev-agent-build: ## Build the Phase 6.1.1 dev agent (A2A HTTP wrapper) image and
 	docker build --platform linux/amd64 -t $(ACR)/$(DEV_AGENT_IMAGE):$(DEV_AGENT_TAG) agents/dev-agent/
 	docker push $(ACR)/$(DEV_AGENT_IMAGE):$(DEV_AGENT_TAG)
 	@echo "✓ Pushed: $(ACR)/$(DEV_AGENT_IMAGE):$(DEV_AGENT_TAG)"
+
+cost-mcp-build: ## Build Cost MCP server image and push to ACR
+	$(eval ACR := $(shell az acr list -g $(RESOURCE_GROUP) --query '[0].loginServer' -o tsv))
+	@test -n "$(ACR)" || (echo "ERROR: No ACR found in $(RESOURCE_GROUP)" && exit 1)
+	az acr login --name $(shell echo $(ACR) | cut -d. -f1)
+	docker build --platform linux/amd64 -t $(ACR)/$(COST_MCP_IMAGE):$(COST_MCP_TAG) services/cost-mcp-server/
+	docker push $(ACR)/$(COST_MCP_IMAGE):$(COST_MCP_TAG)
+	@echo "✓ Pushed: $(ACR)/$(COST_MCP_IMAGE):$(COST_MCP_TAG)"
 
 aks-scale: ## Manually scale the system node pool (NODE_COUNT required; autoscaler overrides this when active)
 	az aks nodepool scale \
@@ -503,6 +514,19 @@ dev-agent-deploy: aks-creds ## Deploy the Phase 6.1.1 dev agent (A2A HTTP wrappe
 	@echo "✓ dev-agent deployed"
 	@echo "  Verify secrets synced: kubectl get secret dev-agent-secrets -n $(NAMESPACE) -o jsonpath='{.data.ANTHROPIC_API_KEY}' | base64 -d | wc -c"
 
+cost-mcp-deploy: aks-creds ## Deploy Cost MCP server to AKS (requires: make bicep-deploy has run for id-cost-mcp-server; AZURE_SUBSCRIPTION_ID required)
+	@test -n "$(AZURE_SUBSCRIPTION_ID)" || (echo "Usage: make cost-mcp-deploy AZURE_SUBSCRIPTION_ID=<sub-id>" && exit 1)
+	@IDENTITY_CLIENT_ID=$$(az identity show -g $(RESOURCE_GROUP) -n id-cost-mcp-server --query clientId -o tsv); \
+	test -n "$$IDENTITY_CLIENT_ID" || { echo "ERROR: id-cost-mcp-server not found — run 'make bicep-deploy' first (adds it via modules/workload-identity.bicep)"; exit 1; }; \
+	sed \
+	  -e "s/<COST_MCP_IDENTITY_CLIENT_ID>/$$IDENTITY_CLIENT_ID/" \
+	  -e "s/<AZURE_SUBSCRIPTION_ID>/$(AZURE_SUBSCRIPTION_ID)/" \
+	  infra/k8s/cost-mcp-server.yaml | kubectl apply -n $(NAMESPACE) -f -
+	kubectl rollout restart deployment/cost-mcp-server -n $(NAMESPACE)
+	kubectl rollout status deployment/cost-mcp-server -n $(NAMESPACE) --timeout=3m
+	@echo "✓ cost-mcp-server deployed"
+	@echo "  Verify workload identity token exchange: kubectl logs -n $(NAMESPACE) deploy/cost-mcp-server | grep -i azure"
+
 kubernetes-mcp-deploy: aks-creds ## Deploy Kubernetes MCP server to AKS (no build step — deploys the upstream quay.io image directly, no bicep-deploy prerequisite either — no Azure credential involved)
 	kubectl apply -f infra/k8s/kubernetes-mcp-server.yaml -n $(NAMESPACE)
 	kubectl rollout status deployment/kubernetes-mcp-server -n $(NAMESPACE) --timeout=3m
@@ -592,6 +616,14 @@ mcp-register-prometheus: ## Register Prometheus MCP gateway (JWT_TOKEN required 
 	  -H "Authorization: Bearer $(JWT_TOKEN)" \
 	  -H "Content-Type: application/json" \
 	  -d '{"name":"prometheus-mcp","url":"http://prometheus-mcp-server.mcp.svc.cluster.local:8000/sse","transport":"SSE","description":"Prometheus — PromQL queries, metric/target discovery (self-hosted, in-cluster, no auth — network-policy-scoped trust boundary)","tags":["prometheus","metrics","observability","sre"],"visibility":"public"}' \
+	  | jq .
+
+mcp-register-cost: ## Register Cost MCP gateway (JWT_TOKEN required — no stored credential, this workload auths via workload-identity federation to Cost Management Reader at subscription scope)
+	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
+	curl -sX POST $(GATEWAY_URL)/gateways \
+	  -H "Authorization: Bearer $(JWT_TOKEN)" \
+	  -H "Content-Type: application/json" \
+	  -d '{"name":"cost-mcp","url":"http://cost-mcp-server.mcp.svc.cluster.local:8000/sse","transport":"SSE","description":"Azure Cost Management — cost by service/resource, trend (subscription-scope only, read-only, in-cluster)","tags":["finops","azure","cost","observability"],"visibility":"public"}' \
 	  | jq .
 
 # ─────────────────────────────────────────────────────────────
