@@ -32,7 +32,10 @@
       "Bash(curl -sf http://localhost:*)",
       "Bash(minikube status:*)",
       "Bash(pip install:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(az costmanagement query:*)",
+      "Bash(az acr show-usage:*)",
+      "Bash(az role assignment list:*)"
     ],
     "deny": [
       "Bash(kubectl delete:*)",
@@ -45,7 +48,10 @@
       "Bash(az * delete:*)",
       "Bash(az * update:*)",
       "Bash(az role assignment create:*)",
-      "Bash(git push:*)",
+      "Bash(git push origin main:*)",
+      "Bash(git push origin main)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
       "Bash(rm -rf:*)"
     ]
   }

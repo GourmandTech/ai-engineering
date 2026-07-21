@@ -7,10 +7,11 @@
         kubernetes-mcp-deploy \
         prometheus-mcp-deploy \
         sre-agent-build sre-agent-deploy \
+        dev-agent-build dev-agent-deploy \
         mcp-get-token mcp-list-gateways mcp-list-tools mcp-register-sre mcp-register-github mcp-register-azure-devops mcp-register-kubernetes mcp-register-prometheus \
         mcp-create-team mcp-list-teams mcp-create-server mcp-list-servers \
-        mcp-create-scoped-token sre-agent-get-token coordinator-get-token \
-        mcp-register-a2a-sre-agent mcp-attach-a2a-agent \
+        mcp-create-scoped-token sre-agent-get-token coordinator-get-token dev-agent-get-token \
+        mcp-register-a2a-sre-agent mcp-register-a2a-dev-agent mcp-attach-a2a-agent \
         lint clean
 
 # ─────────────────────────────────────────────────────────────
@@ -357,6 +358,8 @@ AZURE_DEVOPS_MCP_IMAGE ?= azure-devops-mcp-server
 AZURE_DEVOPS_MCP_TAG   ?= latest
 SRE_AGENT_IMAGE  ?= sre-agent
 SRE_AGENT_TAG    ?= latest
+DEV_AGENT_IMAGE  ?= dev-agent
+DEV_AGENT_TAG    ?= latest
 # No build vars for Kubernetes MCP — deployed straight from the upstream
 # public image (quay.io/containers/kubernetes_mcp_server), no wrapper to
 # build/push to ACR. See infra/k8s/kubernetes-mcp-server.yaml header.
@@ -397,6 +400,14 @@ sre-agent-build: ## Build the Phase 5 SRE agent (A2A HTTP wrapper) image and pus
 	docker build --platform linux/amd64 -t $(ACR)/$(SRE_AGENT_IMAGE):$(SRE_AGENT_TAG) agents/sre-agent/
 	docker push $(ACR)/$(SRE_AGENT_IMAGE):$(SRE_AGENT_TAG)
 	@echo "✓ Pushed: $(ACR)/$(SRE_AGENT_IMAGE):$(SRE_AGENT_TAG)"
+
+dev-agent-build: ## Build the Phase 6.1.1 dev agent (A2A HTTP wrapper) image and push to ACR
+	$(eval ACR := $(shell az acr list -g $(RESOURCE_GROUP) --query '[0].loginServer' -o tsv))
+	@test -n "$(ACR)" || (echo "ERROR: No ACR found in $(RESOURCE_GROUP)" && exit 1)
+	az acr login --name $(shell echo $(ACR) | cut -d. -f1)
+	docker build --platform linux/amd64 -t $(ACR)/$(DEV_AGENT_IMAGE):$(DEV_AGENT_TAG) agents/dev-agent/
+	docker push $(ACR)/$(DEV_AGENT_IMAGE):$(DEV_AGENT_TAG)
+	@echo "✓ Pushed: $(ACR)/$(DEV_AGENT_IMAGE):$(DEV_AGENT_TAG)"
 
 aks-scale: ## Manually scale the system node pool (NODE_COUNT required; autoscaler overrides this when active)
 	az aks nodepool scale \
@@ -472,6 +483,25 @@ sre-agent-deploy: aks-creds ## Deploy the Phase 5 SRE agent (A2A HTTP wrapper) t
 	kubectl rollout status deployment/sre-agent -n $(NAMESPACE) --timeout=3m
 	@echo "✓ sre-agent deployed"
 	@echo "  Verify secrets synced: kubectl get secret sre-agent-secrets -n $(NAMESPACE) -o jsonpath='{.data.ANTHROPIC_API_KEY}' | base64 -d | wc -c"
+
+dev-agent-deploy: aks-creds ## Deploy the Phase 6.1.1 dev agent (A2A HTTP wrapper) to AKS (requires: make bicep-deploy has run, dev-agent-jwt-token in Key Vault; anthropic-api-key reused from Phase 5.2)
+	@TENANT_ID=$$(az account show --query tenantId -o tsv); \
+	IDENTITY_CLIENT_ID=$$(az identity show -g $(RESOURCE_GROUP) -n id-dev-agent --query clientId -o tsv); \
+	test -n "$$IDENTITY_CLIENT_ID" || { echo "ERROR: id-dev-agent not found — run 'make bicep-deploy' first (adds it via modules/workload-identity.bicep)"; exit 1; }; \
+	sed \
+	  -e "s/<TENANT_ID>/$$TENANT_ID/" \
+	  -e "s/<KV_NAME>/kv-contextforge-dev/" \
+	  -e "s/<DEV_AGENT_IDENTITY_CLIENT_ID>/$$IDENTITY_CLIENT_ID/" \
+	  infra/k8s/dev-agent-secrets-provider.yaml | kubectl apply -n $(NAMESPACE) -f -; \
+	sed \
+	  -e "s/<DEV_AGENT_IDENTITY_CLIENT_ID>/$$IDENTITY_CLIENT_ID/" \
+	  infra/k8s/dev-agent.yaml | kubectl apply -n $(NAMESPACE) -f -
+	@# Same reasoning as sre-agent-deploy: DEV_AGENT_TAG defaults to `latest`,
+	@# so `kubectl apply` alone won't roll out a rebuilt image.
+	kubectl rollout restart deployment/dev-agent -n $(NAMESPACE)
+	kubectl rollout status deployment/dev-agent -n $(NAMESPACE) --timeout=3m
+	@echo "✓ dev-agent deployed"
+	@echo "  Verify secrets synced: kubectl get secret dev-agent-secrets -n $(NAMESPACE) -o jsonpath='{.data.ANTHROPIC_API_KEY}' | base64 -d | wc -c"
 
 kubernetes-mcp-deploy: aks-creds ## Deploy Kubernetes MCP server to AKS (no build step — deploys the upstream quay.io image directly, no bicep-deploy prerequisite either — no Azure credential involved)
 	kubectl apply -f infra/k8s/kubernetes-mcp-server.yaml -n $(NAMESPACE)
@@ -581,18 +611,36 @@ mcp-register-a2a-sre-agent: ## Register the sre-agent as an A2A agent, team-scop
 	  -d "{\"agent\": {\"name\": \"sre-agent\", \"endpoint_url\": \"http://sre-agent.mcp.svc.cluster.local:8000/run\", \"agent_type\": \"custom\", \"description\": \"Phase 5.1 SRE agent (Claude Agent SDK) — chains sre-full tools for AKS/Prometheus health checks\", \"tags\": [\"phase5\", \"agent\", \"sre\"]}, \"team_id\": \"$(TEAM_ID)\", \"visibility\": \"team\"}" \
 	  | jq .
 
-mcp-attach-a2a-agent: ## Attach a registered A2A agent to an existing virtual server without disturbing its other tool associations (SERVER_ID, AGENT_ID required; JWT_TOKEN required)
+mcp-register-a2a-dev-agent: ## Register the dev-agent as an A2A agent, team-scoped to dev-team (JWT_TOKEN, TEAM_ID required)
+	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
+	@test -n "$(TEAM_ID)" || (echo "TEAM_ID required — look one up with: make mcp-list-teams JWT_TOKEN=..." && exit 1)
+	curl -sX POST $(GATEWAY_URL)/a2a \
+	  -H "Authorization: Bearer $(JWT_TOKEN)" \
+	  -H "Content-Type: application/json" \
+	  -d "{\"agent\": {\"name\": \"dev-agent\", \"endpoint_url\": \"http://dev-agent.mcp.svc.cluster.local:8000/run\", \"agent_type\": \"custom\", \"description\": \"Phase 6.1.1 dev agent (Claude Agent SDK) — chains dev-tools (GitHub + Azure DevOps) tools\", \"tags\": [\"phase6\", \"agent\", \"dev\"]}, \"team_id\": \"$(TEAM_ID)\", \"visibility\": \"team\"}" \
+	  | jq .
+
+mcp-attach-a2a-agent: ## Attach a registered A2A agent to an existing virtual server, actually exposing its tool over SSE (SERVER_ID, AGENT_ID, NEW_TOOL_ID required; JWT_TOKEN required)
 	@test -n "$(JWT_TOKEN)" || (echo "Set JWT_TOKEN first" && exit 1)
 	@test -n "$(SERVER_ID)" || (echo "SERVER_ID required — look one up with: make mcp-list-servers JWT_TOKEN=..." && exit 1)
-	@test -n "$(AGENT_ID)" || (echo "AGENT_ID required — the id returned by mcp-register-a2a-sre-agent" && exit 1)
-	@# PUT /servers/{id} only touches association fields that are explicitly
-	@# provided (confirmed from _update_server_associations in
-	@# server_service.py: `if new_ids is None: continue`) — omitting
-	@# associated_tools here leaves the server's existing 86 tools untouched.
+	@test -n "$(AGENT_ID)" || (echo "AGENT_ID required — the id returned by mcp-register-a2a-sre-agent/mcp-register-a2a-dev-agent" && exit 1)
+	@test -n "$(NEW_TOOL_ID)" || (echo "NEW_TOOL_ID required — the auto-created a2a_<name> tool's id. NOT discoverable via GET /tools or GET /a2a (both silently exclude team-visibility A2A tools for a platform-admin session — same admin_bypass:false gap as Phase 4 Step 9's GET /servers/{id} 404). Read it from the gateway pod's own logs instead: kubectl logs -n mcp deploy/mcp-stack-mcpgateway --since=10m | grep 'with tool ID'" && exit 1)
+	@# Phase 5.2's real bug #1, still true here: setting associated_a2a_agents
+	@# alone creates the agent's linked tool row but does NOT expose it over the
+	@# server's SSE tools/list (_update_server_associations in server_service.py
+	@# treats associated_tools and associated_a2a_agents as independent
+	@# relationships). Also: a server's *current* tool set must be read from its
+	@# associatedToolIds field (the real tool UUIDs) — NOT associatedTools (a
+	@# display-only field that returns tool *names*, confirmed live 2026-07-21,
+	@# not IDs, despite the similar field name) — merging that field's contents
+	@# instead would silently corrupt the server's tool list on the next PUT.
+	@CURRENT_TOOL_IDS=$$(curl -sf "$(GATEWAY_URL)/servers?limit=0" -H "Authorization: Bearer $(JWT_TOKEN)" \
+	  | jq -c --arg id "$(SERVER_ID)" '[.[] | select(.id==$$id)][0].associatedToolIds // []'); \
+	MERGED_TOOLS=$$(echo $$CURRENT_TOOL_IDS | jq -c --arg t "$(NEW_TOOL_ID)" '. + [$$t] | unique'); \
 	curl -sX PUT $(GATEWAY_URL)/servers/$(SERVER_ID) \
 	  -H "Authorization: Bearer $(JWT_TOKEN)" \
 	  -H "Content-Type: application/json" \
-	  -d "{\"associated_a2a_agents\": [\"$(AGENT_ID)\"]}" \
+	  -d "{\"associated_a2a_agents\": [\"$(AGENT_ID)\"], \"associated_tools\": $$MERGED_TOOLS}" \
 	  | jq .
 
 # ─────────────────────────────────────────────────────────────

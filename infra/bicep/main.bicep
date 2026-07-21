@@ -210,6 +210,28 @@ module sreAgentIdentity 'modules/workload-identity.bicep' = {
   }
 }
 
+// Phase 6.1.1 — same pattern again, dedicated identity + federated credential
+// scoped to the dev-agent ServiceAccount only. Second A2A specialist (GitHub +
+// Azure DevOps via dev-tools), proving the per-workload-identity + narrow
+// virtual server + associated_tools pattern generalizes to a second agent
+// before the coordinator gets real multi-specialist routing (6.1.2). Needs
+// the same two Key Vault secrets as sre-agent (anthropic-api-key, reused —
+// same key works for any Claude Agent SDK workload — and dev-agent-jwt-token,
+// its own team+server-scoped token) — see infra/k8s/dev-agent-secrets-provider.yaml.
+module devAgentIdentity 'modules/workload-identity.bicep' = {
+  name: 'deploy-dev-agent-identity'
+  scope: rg
+  params: {
+    name: 'id-dev-agent'
+    location: location
+    tags: commonTags
+    oidcIssuerUrl: aks.outputs.oidcIssuerUrl
+    serviceAccountNamespace: 'mcp'
+    serviceAccountName: 'dev-agent'
+    keyVaultId: keyVault.outputs.keyVaultId
+  }
+}
+
 // ── Outputs ──────────────────────────────────────────────────────────────────
 
 @description('Resource group that contains all ContextForge resources')
@@ -244,3 +266,6 @@ output azureDevOpsMcpIdentityClientId string = azureDevOpsMcpIdentity.outputs.cl
 
 @description('SRE agent workload identity client ID — use in the ServiceAccount azure.workload.identity/client-id annotation and the SecretProviderClass clientID')
 output sreAgentIdentityClientId string = sreAgentIdentity.outputs.clientId
+
+@description('Dev agent workload identity client ID — use in the ServiceAccount azure.workload.identity/client-id annotation and the SecretProviderClass clientID')
+output devAgentIdentityClientId string = devAgentIdentity.outputs.clientId
