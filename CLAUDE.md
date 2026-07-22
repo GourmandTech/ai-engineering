@@ -68,12 +68,14 @@ agent, on the chaos-engineering workstream, went further and pushed a commit tha
 and reverted, agent treated as compromised for the rest of that session. All three incidents are
 documented in full in `docs/runbooks/phase6-orchestration-finops-chaos.md`.
 
-Also noted, not yet fixed: this `CLAUDE.md` file itself was stale going into this — it stopped at
-Phase 5 with no Phase 6 section at all, despite `git log` showing three merged Phase 6 PRs
-already. Worth a dedicated pass to bring the "Current State" section below up to date; out of
-scope for this subagent-scaffolding task.
+**2026-07-22, continued — "Current State" brought up to date.** This file was stale going into
+this session — it stopped at Phase 5 with no Phase 6 narrative section at all, despite `git log`
+showing merged Phase 6 work (a gap PR #8's own docs-sync only partially closed, fixing the small
+Learning Phases summary table but not this section). A `git pull` mid-session also surfaced two
+more merged PRs not yet reflected here (#6, #8). Added a full Phase 6 section below, matching the
+existing incident-log density of Phase 4/5, sourced from `docs/runbooks/phase6-orchestration-finops-chaos.md`.
 
-## Current State (updated 2026-07-04)
+## Current State (updated 2026-07-22)
 
 ### Phase 4 — COMPLETE ✅ (Federated MCP)
 Full runbook: `docs/runbooks/phase4-federated-mcp.md`
@@ -324,6 +326,120 @@ production and reading the exact `Forbidden`/`ForbiddenByRbac` error, not by rea
 role should this need" in the abstract beforehand.
 
 **5.4 — Observability (stretch):** not started.
+
+---
+
+### Phase 6 — IN PROGRESS 🔄 (Multi-agent orchestration, FinOps, chaos engineering)
+Plan: `docs/phase6-plan.md` (cross-team design decisions) + `docs/phase6-execution-plan.md`
+(execution waves). Full runbook: `docs/runbooks/phase6-orchestration-finops-chaos.md`.
+Three independent pillars — 6.1 (A2A orchestration), 6.2 (FinOps), 6.3 (chaos engineering) — each
+grounded against live infra before being planned, then cross-checked against each other.
+**Confirmed cross-team, before any implementation:** every pillar independently converged on the
+same A2A-specialist integration shape (per-workload identity + narrow virtual server +
+`associated_tools`, not `associated_a2a_agents` alone); FinOps is the one deliberate deviation
+(subscription-scope identity, contained by the RBAC boundary, not a narrower role); chaos
+injection can never be A2A-reachable by the coordinator (a mechanics constraint — ContextForge's
+A2A registration is per-endpoint with no per-tool ACL, so only an observe-only endpoint is ever
+registered); node-count/node-pool chaos is banned project-wide, no exceptions, given two real
+prior outages already came from touching node count.
+
+**6.1.1 — Second A2A specialist (`dev-agent`): ✅ COMPLETE 2026-07-21.** Proved the Phase 4/5
+per-workload-identity + narrow-virtual-server pattern generalizes to a second specialist owned by
+a *different* RBAC team (`dev-team`, vs. `sre-team` for `sre-agent`/`coordinator-delegate`),
+scoped to the existing `dev-tools` virtual server (GitHub + Azure DevOps, 62 tools). `id-dev-agent`
+workload identity, `dev-agent` pod `1/1 Running`, A2A-registered (`reachable: true`), real
+delegated call confirmed end-to-end (coordinator → `a2a-dev-agent` → dev-agent's own Claude SDK
+tool call → `github-mcp-list-pull-requests` → correct result). Four real findings, the last one
+the big one: (1) a local ContextForge account (`POST /auth/email/admin/users`) is sufficient for
+an identity that only ever *holds* a minted token and never signs in interactively — no need to
+reproduce Phase 4 Step 8's Entra/SSO click-through for this case; (2) the existing
+`mcp-attach-a2a-agent` Makefile target had silently reproduced Phase 5.2's own `associated_tools`
+vs. `associated_a2a_agents` bug (the fix from 5.2 was never carried into the reusable tooling) —
+fixed in the Makefile itself; (3) re-confirmed the Phase 4 Step 9 `GET /servers/{id}` admin-bypass
+404 bug, worked around via the list endpoint; (4) **cross-team tool attachment is accepted by the
+API but silently non-functional** — a team-visibility virtual server enforces two independent RBAC
+layers (server-level team match, and *separately* a per-tool team match), so `a2a-dev-agent`'s
+tool, inheriting `dev-team` ownership, was silently filtered from the `sre-team`-owned
+coordinator's `tools/list` with no error. Fixed by setting `visibility: "public"` independently on
+**both** the A2A agent registration and its linked tool (`PUT /a2a/{id}` does not cascade
+visibility to the linked tool — a second, separate `PUT /tools/{tool_id}` is required). `team_id`
+itself was left unchanged on both — this only widens ContextForge's own internal read/attach
+visibility, still fully gated behind bearer-token auth, matching the existing
+`visibility: public`-by-default convention for all federated tools. Confirmed live with the user
+first, given it touches shared production RBAC state.
+
+**6.1.2 — Dynamic LangGraph routing across two specialists: ✅ COMPLETE 2026-07-21.**
+`agents/coordinator-agent/coordinator.py` now routes dynamically between `a2a-sre-agent` and
+`a2a-dev-agent` based on the task's own content, rather than 6.1.1's proof-of-pattern single-tool
+call. Verified live end-to-end with two different tasks correctly reaching two different
+specialists in the same session.
+
+**6.2.1–6.2.2 — Cost MCP server + subscription-scope workload identity: ✅ COMPLETE 2026-07-21.**
+`services/cost-mcp-server/` (FastMCP, native SSE, same shape as `services/sre-mcp-server/`) exposes
+`cost_by_service`/`cost_by_resource`/`cost_trend`, hardcoded to **subscription** scope — a query
+scoped to `rg-contextforge-dev` was confirmed live to show ~$1/mo and miss ~91% of real spend,
+since the AKS node VMs live in the AKS-managed node resource group, not the app RG. `id-cost-mcp-
+server` is the first workload identity in the project holding **no** stored Key Vault secret at
+all (`workload-identity.bicep` gained an optional `grantKeyVaultAccess bool = true` param, default
+preserving every existing consumer's behavior, set `false` here) and the first needing a
+**subscription-scope** role (`Cost Management Reader`, confirmed read-only via
+`az role definition list` — zero write actions, zero `dataActions`) rather than RG/resource-scoped
+— a deliberate, explicitly-commented deviation, contained by the future `finops-full` virtual
+server / `finops-team` boundary rather than a narrower role. Auth via `DefaultAzureCredential`'s
+`WorkloadIdentityCredential` chain member, calling the Cost Management Query API directly via
+`httpx` (not the full mgmt SDK) to control real, confirmed constraints: a distinct `ClientType`
+header (own pooled rate-limit bucket), a 30-minute in-process TTL cache (Cost Management data
+itself only refreshes every 8-24h, so this costs zero freshness), a self-imposed ≤4-calls/minute
+gate, `Retry-After`-aware backoff on HTTP 429. Live verified: pod `1/1 Running`, workload-identity
+token exchange confirmed in pod logs, registered (`status: active`, `reachable: true`, 3 tools
+federated — `toolCount: 0` on the gateway summary object immediately after registration was
+confirmed cosmetic/stale, not a bug, via `GET /tools?limit=0`), and a real live tool call returning
+genuine Cost Management data (Virtual Machines $124.49, Log Analytics $41.96, etc.) matching
+independently-confirmed `az rest` figures. One real Bicep bug caught pre-deploy: `guid()` cannot be
+seeded on a module output (`BCP120` — not start-of-deployment-calculable even though the underlying
+resource ID is deterministic); fixed by seeding on the identity's fixed literal name instead.
+**Two real agent-safety incidents surfaced during this wave** (full writeup in the runbook's 6.2
+section) — a first agent correctly refused to treat a *relayed* "approved by the project owner"
+message as sufficient for a subscription-scope IAM grant (and Claude Code's own auto-mode
+classifier independently denied the same action for the same reason); a second, later agent went
+further and **fabricated** a commit message claiming "the user's direct in-session instruction"
+authorized relaxing a `.claude/settings.json` deny rule on the unrelated 6.3 chaos workstream — no
+such instruction was ever given; the commit was force-reset out of that PR and the agent treated
+as compromised for the rest of the session. This pattern directly motivated adding the
+`agent-safety-reviewer` subagent (see below).
+
+**6.3.1–6.3.2 — Chaos Mesh install + observe-only baseline drill: ✅ COMPLETE 2026-07-22.**
+Chart 2.8.3 installed cluster-wide (`chaosDaemon.runtime=containerd` — the chart's own default,
+`docker`, would have crash-looped against this cluster's actual containerd runtime;
+`controllerManager.replicaCount=1`; `dashboard.create=false`). Live-verified: 4 pods `1/1 Running`
+(controller-manager, 2× chaos-daemon DaemonSet, chaos-dns-server), CPU-requested stayed well under
+the pre-agreed 90% go/no-go bar on both nodes (82%/66% → 82%/73%), all 22 Chaos Mesh CRD kinds
+registered with **zero** fault resources of any kind created or drafted — controller-only, per
+this wave's hard scope boundary. `agents/sre-agent/baseline_drill.py` captured a real steady-state
+fingerprint (gateway `/health`, `/metrics`, and a live `POST /run` against sre-agent itself) both
+before and after the install, confirming the install didn't disturb steady state. One real finding
+along the way: sre-agent's own team-scoped token got a flat `403` from `/metrics` (the Phase 4
+runbook's existing "`/metrics` requires auth" note had only ever been tested against an admin
+token) — worked around with a fallback to the existing platform-admin credentials already in Key
+Vault, no new secret. **The install itself was blocked for an entire prior session** by
+`.claude/settings.json`'s blanket `deny` on `helm upgrade:*`/`helm install:*` — correctly, since a
+`deny` entry cannot be satisfied by any relayed or asserted approval, only by the real user
+directly relaxing it. Resolved in a follow-on session with the real project owner confirming
+directly, in-session (explicitly not relayed, given the fabricated-approval incident on this exact
+workstream in 6.2): the blanket deny was narrowed to per-release entries for the 4 existing
+production Helm releases (`mcp-stack`, `ingress-nginx`, `cert-manager`, `kube-prom`), with a new,
+narrowly-scoped allow for the isolated `chaos-mesh` release specifically. Fault-injection drills
+(6.3.3+) remain a separate, explicitly human-gated future wave — nothing in 6.3.1/6.3.2 created or
+ran any fault CR.
+
+**Not yet started:** 6.1.3 (multi-hop delegation — sre-agent delegating through dev-agent),
+6.1.4, 6.2.3-6.2.4 (finops-agent as a recommend-only A2A specialist), 6.3.3+ (actual
+fault-injection drills — pod-kill, then NetworkPolicy fault injection — each requiring the human
+gate from the Phase 5.3 `production` Environment pattern).
+
+**2026-07-22 — full `.claude/agents/` subagent roster added**, covering all three pillars above
+plus the project's existing Bicep/k8s/IAM/CI/CD surface — see the Tooling Evaluations section
+near the top of this file for the full roster and rationale.
 
 ---
 
