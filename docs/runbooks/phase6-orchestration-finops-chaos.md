@@ -690,6 +690,96 @@ Opened against `main` from branch `feat/phase6-2-cost-mcp-server`.
 
 ---
 
+## 6.2.3–6.2.4 — FinOps rightsizing agent
+
+**Goal:** `agents/finops-agent/`, chaining cost-mcp-* with the already-federated
+kubernetes-mcp-*/prometheus-mcp-* utilization tools in one context, producing concrete,
+resource-specific rightsizing recommendations — recommend-only, never autonomous.
+
+### RBAC setup — `finops-team` + `finops-full` (the design already anticipated in 6.2.1-6.2.2)
+
+Created both fresh: `finops-team` (id `befa4d9126624849b7776162139041f5`) and `finops-full`
+(id `3e2d29fda61847319a59b5afe3a51184`, 22 tools: `cost-mcp-*` × 3 + `kubernetes-mcp-*` × 13 +
+`prometheus-mcp-*` × 6 — same "one agent correlates cost + utilization" design already stated
+back in 6.2.1's own decision log). A local, non-interactive test identity
+(`finopstester@gourmandtech.net`, `POST /auth/email/admin/users` — same pattern as
+`devtester`, since this identity only ever needs to hold a minted token) was added as a plain
+member, then `mcp-create-scoped-token` minted a team+server-scoped, non-admin token
+(`finops-agent-jwt-token` in Key Vault). Confirmed live via the raw MCP protocol
+(`mcp.client.sse`, not the REST field): 22 tools, correct.
+
+### Real bug found — `mcp-create-server`'s jq filter has been silently broken since Phase 4 Step 5
+
+Creating `finops-full` via the existing `mcp-create-server` target failed outright:
+`jq: error: Cannot index array with string "gatewaySlug"`. Root cause: the filter was
+`select(($$gws | split(",") | index(.gatewaySlug)) != null)` — inside that sub-expression, `.`
+has already shifted to the `split(",")` result (an array of gateway-name strings) by the time
+`.gatewaySlug` is evaluated, so it's trying to read a `.gatewaySlug` field off an array of
+strings, not off the tool object. `git log -S 'index(.gatewaySlug)'` traces this to the
+**original** Phase 4 Step 5 commit (2026-07-04) — it has been broken for over two weeks, just
+never re-exercised, since `sre-full`/`dev-tools` were each only ever created once. Fixed by
+binding `.gatewaySlug` to a jq variable (`.gatewaySlug as $gs | ...`) while `.` is still the
+tool object, before entering the split/index sub-expression. Re-verified the fix directly
+against the live `/tools` response (22 tools, matching the expected 3+13+6) before trusting the
+target again.
+
+### Recommend-only, confirmed by construction, not just by design intent
+
+Before running anything, checked whether any of `finops-full`'s 22 tools could apply a change:
+`grep -iE "create|delete|update|apply|scale|patch|write|set-|remove|edit"` against all 22 tool
+names returned nothing. Combined with `tools=[]` (disables every built-in Claude Code tool —
+Bash/Read/Write/etc, same mechanism already used by `sre-agent`/`dev-agent`/`dev-agent`) and the
+already-established read-only nature of each underlying MCP server (`kubernetes-mcp-server`'s
+`view` ClusterRole from Phase 4, `cost-mcp-server`'s GET-only Cost Management calls,
+`prometheus-mcp-server`'s query-only PromQL tools), there is no code path anywhere in this
+agent's reachable call graph that can resize, scale, or modify anything — confirmed, not
+assumed.
+
+### Live run — real report, real cost, real recommendations
+
+`agents/finops-agent/agent.py`'s system prompt hard-codes the priority order (node pool → ACR →
+Log Analytics/Key Vault) and an explicit, non-negotiable ban on ever recommending the AKS system
+node pool's autoscaler minimum below 2 — the same node-count ban already standing project-wide
+for 6.1/6.3, citing this project's own two real prior incidents (Phase 3 CPU exhaustion,
+Phase 5.2's near-miss `count: 2→1`) directly in the prompt rather than leaving it to the model's
+judgment.
+
+First attempt timed out at 180s mid-run (18 real tool calls made — cost + several PromQL
+utilization queries — but never reached the final report). Re-ran with a longer timeout (480s);
+completed in full, cost `$0.3889`, saved to `docs/reports/finops-rightsizing-2026-07-22.md`.
+
+**The report itself is genuinely data-grounded, not generic advice:**
+- **Node pool** (the one material lever, $131.36/mo, ~72% of spend): correlated real Prometheus
+  data (7-day peak CPU only ~9%, memory 28-38%) against real Cost Management spend, and — the
+  actual interesting finding — real CPU *requests* committed at 78% of allocatable (explaining
+  why the autoscaler holds both nodes despite near-idle actual usage). Recommended, in the
+  plan's own priority order: (a) burstable `Standard_D2s_v7` → `Standard_B2ms` SKU change
+  first (~$50/mo estimated saving, same vCPU/memory footprint, explicitly ruled out the smaller
+  B2s option due to real measured memory headroom), (b) a Spot user pool for the stateless
+  MCP/agent pods second, explicitly excluding the gateway/Postgres/Redis. Explicitly stated the
+  node-count floor is respected and named the two incidents that justify it — never treated as a
+  lever, not even as a "consider."
+- **ACR**: correctly identified real MTD cost as $0 (matching the project's own earlier live
+  Cost Management confirmation), flagged Standard-vs-Basic as a low-priority hygiene item rather
+  than a real saving given the $0 actual bill, and was honest about its own limitation (no
+  direct storage-query tool, so the "under 10GB" claim is inferred from known image inventory,
+  not measured — recommended verifying with `az acr show-usage` before acting).
+- **Log Analytics / Key Vault**: explicitly recommended **no action** for both, with real
+  reasoning (Log Analytics is correctly on pay-as-you-go with no wasted committed tier; Key
+  Vault's $0.17/mo is expected per-operation cost on the correct tier) — exactly the
+  "discrimination, not blanket cost-cutting" bar the plan asked for.
+
+Every figure in the report is a real number from a real tool call this session (not simulated),
+and the agent was explicit about its own data-source caveats (kubelet/Metrics Server RBAC-blocked
+for this read-only identity, so node metrics came from Prometheus instead; full pod list exceeded
+output limits, verified via a targeted `status.phase!=Running` field-selector query instead).
+
+6.2.3-6.2.4 are complete. Any accepted recommendation from the report becomes a Bicep param
+change (`nodeVmSize`, node pool SKU) flowing through the existing Phase 5.3 gated `deploy.yml` /
+`production` Environment — never applied automatically by this agent or anything in this session.
+
+---
+
 ## Post-6.2 incident (2026-07-22) — first live gated `deploy.yml` run, two real bugs, one brief outage
 
 **Context.** Every merge since Phase 6 work started had triggered a real `deploy.yml` run against

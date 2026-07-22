@@ -767,8 +767,15 @@ mcp-create-server: ## Create a virtual server scoped to a team, attaching all to
 	@test -n "$(SERVER_NAME)" || (echo "Usage: make mcp-create-server SERVER_NAME=sre-full SERVER_DESC='...' TEAM_ID=... GATEWAYS=sre-toolbox,github-mcp JWT_TOKEN=..." && exit 1)
 	@test -n "$(TEAM_ID)" || (echo "TEAM_ID required — look one up with: make mcp-list-teams JWT_TOKEN=..." && exit 1)
 	@test -n "$(GATEWAYS)" || (echo "GATEWAYS required — comma-separated gateway names (matched against each tool's gatewaySlug), e.g. GATEWAYS=github-mcp,azure-devops-mcp" && exit 1)
+	@# Real bug found 2026-07-22 (Phase 6.2.3): the old filter evaluated
+	@# `.gatewaySlug` *inside* the `index(...)` sub-expression, where `.` had
+	@# already shifted to the split(",") array (from the preceding `$$gws |
+	@# split(",") |` in the same parens) — jq errored with "Cannot index array
+	@# with string \"gatewaySlug\"" on every invocation, not just this one.
+	@# Fixed by binding `.gatewaySlug` to a variable ($$gs) while `.` is still
+	@# the tool object, before entering the split/index sub-expression.
 	@TOOL_IDS=$$(curl -sf "$(GATEWAY_URL)/tools?limit=0" -H "Authorization: Bearer $(JWT_TOKEN)" \
-	  | jq -c --arg gws "$(GATEWAYS)" '[.[] | select(($$gws | split(",") | index(.gatewaySlug)) != null) | .id]'); \
+	  | jq -c --arg gws "$(GATEWAYS)" '[.[] | select(.gatewaySlug as $$gs | ($$gws | split(",") | index($$gs)) != null) | .id]'); \
 	curl -sX POST $(GATEWAY_URL)/servers \
 	  -H "Authorization: Bearer $(JWT_TOKEN)" \
 	  -H "Content-Type: application/json" \
