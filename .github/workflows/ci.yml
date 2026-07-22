@@ -25,6 +25,8 @@ jobs:
           version: v3.21.2
       - name: make lint (Helm chart + Bicep templates)
         run: make lint
+      - name: chart-verify (catches the 2026-07-22 runAsNonRoot/runAsUser class of regression)
+        run: make chart-verify
 
   helm-diff:
     name: helm-diff

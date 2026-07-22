@@ -41,6 +41,8 @@ jobs:
       - uses: azure/setup-helm@v4
         with:
           version: v3.21.2
+      - name: chart-verify (catches the 2026-07-22 runAsNonRoot/runAsUser class of regression)
+        run: make chart-verify
       - name: az bicep install
         run: az bicep install
       - name: bicep validate

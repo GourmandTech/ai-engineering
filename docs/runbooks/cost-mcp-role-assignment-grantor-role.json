@@ -1,0 +1,15 @@
+{
+  "Name": "Cost MCP Role-Assignment Grantor (custom, Phase 6.2 deploy)",
+  "IsCustom": true,
+  "Description": "Grants ONLY the ability to create/read the single Cost Management Reader role assignment for id-cost-mcp-server at subscription scope. Constrained via an ABAC condition on the role assignment (not this definition) to that one target role definition (72fafb9e-0641-4937-9268-a91bfd8191a3) — this is not a general Microsoft.Authorization/roleAssignments delegation grant. Exists because main.bicep's costMcpRoleAssignment resource is the one deliberately subscription-scoped role assignment in the project, and the deploy app's existing Role Based Access Control Administrator grant is scoped only to rg-contextforge-dev, not the subscription.",
+  "Actions": [
+    "Microsoft.Authorization/roleAssignments/write",
+    "Microsoft.Authorization/roleAssignments/read"
+  ],
+  "NotActions": [],
+  "DataActions": [],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/subscriptions/b5d1ee02-5ad0-44d6-9b14-80e38c714404"
+  ]
+}
