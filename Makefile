@@ -11,6 +11,7 @@
         dev-agent-build dev-agent-deploy \
         cost-mcp-build cost-mcp-deploy \
         chaos-mesh-install chaos-mesh-uninstall \
+        monitoring-upgrade grafana-provision-dashboard port-forward-grafana \
         mcp-get-token mcp-list-gateways mcp-list-tools mcp-register-sre mcp-register-github mcp-register-azure-devops mcp-register-kubernetes mcp-register-prometheus mcp-register-cost \
         mcp-create-team mcp-list-teams mcp-create-server mcp-list-servers \
         mcp-create-scoped-token sre-agent-get-token coordinator-get-token dev-agent-get-token \
@@ -552,6 +553,21 @@ chaos-mesh-install: aks-creds ## Install Chaos Mesh (observe-only baseline, no f
 chaos-mesh-uninstall: ## Remove Chaos Mesh and its namespace (no fault CRDs should exist at uninstall time — this wave never creates any)
 	helm uninstall chaos-mesh --namespace chaos-mesh
 	kubectl delete namespace chaos-mesh --ignore-not-found
+
+monitoring-upgrade: aks-creds ## Apply infra/helm/values.monitoring.yaml to the existing kube-prom release (Phase 6.1.4 follow-up — installs the Infinity data source plugin)
+	helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
+	helm repo update prometheus-community
+	helm upgrade --install kube-prom prometheus-community/kube-prometheus-stack \
+	  --namespace monitoring --create-namespace \
+	  -f infra/helm/values.monitoring.yaml \
+	  --wait --timeout=8m
+	@echo "✓ kube-prom upgraded. Verify plugin: kubectl exec -n monitoring deploy/kube-prom-grafana -c grafana -- ls /var/lib/grafana/plugins"
+
+grafana-provision-dashboard: aks-creds ## Provision the Infinity datasource + A2A agent dashboard in Grafana (requires: make monitoring-upgrade has run, grafana-admin-metrics-token in Key Vault; KV_NAME optional)
+	KV_NAME=$(or $(KV_NAME),kv-contextforge-dev) ./scripts/grafana-provision-a2a-dashboard.sh
+
+port-forward-grafana: ## Port-forward the self-hosted Grafana to localhost:3000 (admin user, password: kubectl get secret -n monitoring kube-prom-grafana -o jsonpath='{.data.admin-password}' | base64 -d)
+	kubectl port-forward -n monitoring svc/kube-prom-grafana 3000:80
 
 kubernetes-mcp-deploy: aks-creds ## Deploy Kubernetes MCP server to AKS (no build step — deploys the upstream quay.io image directly, no bicep-deploy prerequisite either — no Azure credential involved)
 	kubectl apply -f infra/k8s/kubernetes-mcp-server.yaml -n $(NAMESPACE)
