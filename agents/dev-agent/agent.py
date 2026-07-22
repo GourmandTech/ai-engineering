@@ -12,9 +12,22 @@ routing (6.1.2).
 import asyncio
 import os
 import sys
+from dataclasses import dataclass
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from claude_agent_sdk.types import AssistantMessage, McpSSEServerConfig, ResultMessage, TextBlock, ToolUseBlock
+
+
+@dataclass
+class AgentRunResult:
+    """Phase 6.1.4 — carries per-hop Claude API token cost alongside the answer.
+
+    See `agents/sre-agent/agent.py`'s identical dataclass for the full rationale —
+    this is the second half of the same fix, applied to the other specialist.
+    """
+
+    text: str
+    cost_usd: float | None
 
 GATEWAY_URL = os.environ.get("GATEWAY_URL", "https://contextforge.gourmandtech.com")
 DEV_TOOLS_SERVER_ID = os.environ.get("DEV_TOOLS_SERVER_ID", "86c6565d348848f195d1b41640432a35")
@@ -57,11 +70,12 @@ async def _wait_for_mcp_connection(client: ClaudeSDKClient) -> None:
     raise TimeoutError(f"ContextForge MCP server did not connect within {CONNECT_TIMEOUT_S}s")
 
 
-async def run_task(task: str) -> str:
-    """Run one task against the dev-tools-federated tools and return the final report text.
+async def run_task(task: str) -> AgentRunResult:
+    """Run one task against the dev-tools-federated tools and return the report + its cost.
 
     Shared by the CLI entrypoint below and a2a_server.py (the A2A HTTP wrapper
-    the coordinator delegates to) — same agent, two callers.
+    both the coordinator and 6.1.3's sre-agent delegate to) — same agent,
+    multiple callers.
     """
     options = ClaudeAgentOptions(
         mcp_servers={
@@ -82,6 +96,7 @@ async def run_task(task: str) -> str:
     )
 
     texts: list[str] = []
+    cost_usd: float | None = None
     async with ClaudeSDKClient(options=options) as client:
         await _wait_for_mcp_connection(client)
         await client.query(task)
@@ -94,8 +109,9 @@ async def run_task(task: str) -> str:
                     elif isinstance(block, ToolUseBlock):
                         print(f"[tool call] {block.name}({block.input})", file=sys.stderr)
             elif isinstance(message, ResultMessage):
+                cost_usd = message.total_cost_usd
                 print(f"\n--- {message.subtype}, cost=${message.total_cost_usd:.4f} ---", file=sys.stderr)
-    return "\n".join(texts)
+    return AgentRunResult(text="\n".join(texts), cost_usd=cost_usd)
 
 
 if __name__ == "__main__":

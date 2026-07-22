@@ -11,9 +11,25 @@ exercises the RBAC boundary built in Phase 4 rather than bypassing it.
 import asyncio
 import os
 import sys
+from dataclasses import dataclass
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from claude_agent_sdk.types import AssistantMessage, McpSSEServerConfig, ResultMessage, TextBlock, ToolUseBlock
+
+
+@dataclass
+class AgentRunResult:
+    """Phase 6.1.4 — carries per-hop Claude API token cost alongside the answer.
+
+    `total_cost_usd` on the SDK's own `ResultMessage` was already measured (5.2's
+    $0.61/run) but only ever printed to stderr — invisible to whatever's driving a
+    delegation chain. Returning it structurally lets `a2a_server.py` surface it in
+    the actual HTTP response, so a caller (or a human inspecting one) can see this
+    specific hop's cost, not just the chain's final text answer.
+    """
+
+    text: str
+    cost_usd: float | None
 
 GATEWAY_URL = os.environ.get("GATEWAY_URL", "https://contextforge.gourmandtech.com")
 SRE_FULL_SERVER_ID = os.environ.get("SRE_SERVER_ID", "7c7b4364c6214f089e847802819b7f2f")
@@ -63,11 +79,12 @@ async def _wait_for_mcp_connection(client: ClaudeSDKClient) -> None:
     raise TimeoutError(f"ContextForge MCP server did not connect within {CONNECT_TIMEOUT_S}s")
 
 
-async def run_task(task: str) -> str:
-    """Run one task against the gateway-federated tools and return the final report text.
+async def run_task(task: str) -> AgentRunResult:
+    """Run one task against the gateway-federated tools and return the report + its cost.
 
     Shared by the CLI entrypoint below and `a2a_server.py` (the A2A HTTP wrapper
-    used by 5.2's coordinator agent) — same agent, two callers.
+    used by 5.2's coordinator agent and 6.1.3's sre-agent-to-dev-agent delegation)
+    — same agent, multiple callers.
     """
     options = ClaudeAgentOptions(
         mcp_servers={
@@ -97,6 +114,7 @@ async def run_task(task: str) -> str:
     )
 
     texts: list[str] = []
+    cost_usd: float | None = None
     async with ClaudeSDKClient(options=options) as client:
         await _wait_for_mcp_connection(client)
         await client.query(task)
@@ -109,8 +127,9 @@ async def run_task(task: str) -> str:
                     elif isinstance(block, ToolUseBlock):
                         print(f"[tool call] {block.name}({block.input})", file=sys.stderr)
             elif isinstance(message, ResultMessage):
+                cost_usd = message.total_cost_usd
                 print(f"\n--- {message.subtype}, cost=${message.total_cost_usd:.4f} ---", file=sys.stderr)
-    return "\n".join(texts)
+    return AgentRunResult(text="\n".join(texts), cost_usd=cost_usd)
 
 
 if __name__ == "__main__":

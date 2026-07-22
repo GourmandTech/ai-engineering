@@ -22,6 +22,9 @@ app = FastAPI(title="Dev Agent (A2A)", description="Phase 6.1.1 dev agent, expos
 
 class AgentResponse(BaseModel):
     response: str
+    # Phase 6.1.4 — per-hop Claude API token cost, mirrors sre-agent's identical
+    # field. None if the SDK didn't report a cost.
+    cost_usd: float | None = None
 
 
 def _extract_query(body: dict) -> str:
@@ -46,7 +49,7 @@ async def run_agent(request: Request) -> AgentResponse:
     task = _extract_query(body) or "Summarize recent GitHub PR/issue activity or Azure DevOps work items."
     logger.info("A2A task received: %s", task)
     result = await run_task(task)
-    return AgentResponse(response=result)
+    return AgentResponse(response=result.text, cost_usd=result.cost_usd)
 
 
 @app.get("/health")

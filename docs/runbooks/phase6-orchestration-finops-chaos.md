@@ -304,6 +304,113 @@ point for an already-approved setting, not a fresh widening decision.
 
 ---
 
+## 6.1.4 — Delegation-chain observability, closing out 6.1
+
+**Goal:** confirm `MCPGATEWAY_A2A_METRICS_ENABLED`, root-cause the Phase 5.2
+`a2aAgents.totalInteractions: 0` gap (now that real multi-hop traffic exists), add a Grafana
+panel for per-agent stats, and add per-hop Claude API token cost tracking.
+
+### Confirmed live: `MCPGATEWAY_A2A_METRICS_ENABLED=true`
+
+Read directly off the gateway pod's env/ConfigMap (`kubectl get configmap -n mcp -o json`), along
+with `A2A_STATS_CACHE_TTL=30` and `METRICS_AGGREGATION_AUTO_START=false` — both flagged as
+possible causes in the Phase 5.2 writeup, neither actually is (see root cause below).
+
+### Root cause, finally confirmed with code-level evidence (not guessed) — two independent, disconnected metric-recording paths in vendored code
+
+`GET /metrics`'s `a2aAgents` block still reads `totalInteractions: 0` after dozens of confirmed
+real, successful A2A calls across 6.1.1/6.1.2/6.1.3 (gateway logs prove this repeatedly). Traced
+the actual data flow in `.contextforge/mcpgateway/`:
+
+1. **`services/a2a_service.py`'s `invoke_agent`** *is* fully instrumented — its `finally` block
+   calls `metrics_buffer.record_a2a_agent_metric_with_duration(...)`, which is exactly what
+   `services/a2a_service.py`'s own `aggregate_metrics()` (the function backing `/metrics`'s
+   `a2aAgents` block) reads back via `aggregate_metrics_combined(db, "a2a_agent")`.
+2. **But this is not the code path any real call in this project ever takes.** Every actual A2A
+   invocation in this project happens because an agent calls the auto-created MCP tool
+   (`a2a-sre-agent`/`a2a-dev-agent`) — confirmed from the exact gateway log line
+   (`"Calling A2A agent '%s' at %s"`, no `with arguments:` suffix) matching
+   `services/tool_service.py`'s own `invoke_tool` method (line ~6327), **not**
+   `a2a_service.py:invoke_agent` (whose own distinct log format includes `with arguments: %s`).
+   `invoke_tool` has its **own separate, inline** A2A-calling implementation
+   (`prepare_a2a_invocation` + a direct `self._http_client.post(...)`) that records the result
+   under the generic `tool` metric type only — it never calls `a2a_service.py`'s instrumented
+   `invoke_agent`, so `record_a2a_agent_metric_with_duration` is simply never reached by this
+   project's actual usage pattern.
+3. **Confirmed live, not just in source:** a real flush right after a 6.1.3 delegation call
+   (`Metrics flush #1: wrote 4 records (tools=2, ..., a2a=0)`) shows `tools=2` (both hops recorded
+   as generic tool executions) and `a2a=0` — exactly matching the code-level finding, and with zero
+   "Failed to record A2A metrics" errors logged (so it isn't silently failing — it's simply never
+   invoked).
+
+**This is an upstream architectural gap, not fixable without patching vendored `.contextforge/`
+source** (against this project's standing convention) — the only callers of the instrumented
+`invoke_agent` are the dedicated `POST /a2a/invoke`-family REST endpoints, which nothing in this
+project's real usage pattern (delegation always happens via the MCP tool-call abstraction) ever
+calls.
+
+### Working substitute found: `GET /admin/metrics`'s `topPerformers.tools[]`
+
+Since A2A interactions genuinely are recorded — just under the `tool` metric type, keyed by the
+A2A agent's linked tool id/name (`a2a-sre-agent`, `a2a-dev-agent`) — `GET /admin/metrics` (JWT
+auth, JSON) does show real, populated per-agent stats:
+```json
+{"id": "19e56cb9dc684c3492e76d6c4dae583c", "name": "a2a-sre-agent", "executionCount": 24,
+ "avgResponseTime": 31.79, "successRate": 20.83, "lastExecution": "2026-07-21T20:00:00Z"}
+```
+(`a2a-dev-agent` doesn't appear — `topPerformers` is capped to the top-N tools by volume, and it
+has far fewer calls than `a2a-sre-agent` or the high-volume Prometheus/K8s tools ahead of it in
+this project's own usage so far.) The `a2a-sre-agent` success rate shown (20.8%) is itself worth a
+follow-up — real calls I've confirmed succeeded are far more common than this number implies,
+which may mean this metric counts something more granular than whole-task success (e.g. individual
+retry/timeout sub-events within one multi-tool-call session) — flagged, not chased further here.
+
+### Grafana panel — not added; requires a real infra decision, not made unilaterally here
+
+Checked what's actually live before promising a panel: `kubectl exec` into `kube-prom-grafana`
+shows only the default kube-prometheus-stack bundled app plugins
+(`grafana-exploretraces-app`/`grafana-lokiexplore-app`/`grafana-metricsdrilldown-app`/
+`grafana-pyroscope-app`) — **no JSON/HTTP API datasource plugin** (e.g. the common
+`yesoreyeram-infinity-datasource`) is installed. Separately, `GET /metrics/prometheus` (this
+project's actual Prometheus-scrapeable endpoint) only exposes generic per-HTTP-route metrics
+(`http_requests_total{handler="/admin/a2a/partial",...}`) — **no per-tool or per-agent labeled
+Prometheus series exist at all**, confirmed by grepping the full scrape output. So neither of the
+two paths to a real Grafana panel (native PromQL against an existing scrape target, or a JSON
+datasource against `/admin/metrics`) is available without a genuine new infra change (installing a
+Grafana plugin via Helm values + restart) — not something to do unilaterally mid-wave. Flagging
+this to the real project owner as an open decision rather than forcing a low-quality substitute;
+`GET /admin/metrics`'s `topPerformers.tools[]` (above) is the correct query to wire up once a
+decision is made on how to get it into Grafana.
+
+### Per-hop Claude API token cost tracking — implemented and verified live
+
+`agents/sre-agent/agent.py` and `agents/dev-agent/agent.py`'s `run_task()` now return a new
+`AgentRunResult(text, cost_usd)` dataclass instead of a bare string, capturing
+`ResultMessage.total_cost_usd` (previously only ever printed to stderr, invisible to anything
+downstream — this is exactly 5.2's originally-measured `$0.61/run`, now structurally captured).
+Both `a2a_server.py`s' `AgentResponse` model gained a `cost_usd: float | None` field, populated
+from this. Rebuilt and redeployed both `sre-agent` and `dev-agent` pods; confirmed working at the
+source via a direct `kubectl port-forward` call straight to `dev-agent`'s own `/run` endpoint
+(bypassing the gateway entirely): `{"response": "...", "cost_usd": 0.01579575}` — real, present.
+
+**Real finding — this cost is currently invisible to any *delegating* agent, a second, separate
+gateway-side gap.** Calling the exact same tool through the gateway (`tools/call` →
+`a2a-dev-agent`) returns only `{"content": [{"type": "text", "text": "..."}], "isError": false}` —
+no `cost_usd` anywhere. Traced to `tool_service.py:invoke_tool`'s A2A response-handling branch:
+`if isinstance(response_data, dict) and "response" in response_data: val =
+response_data["response"]` — it extracts **only** the `"response"` key and discards every other
+field the A2A endpoint returned, `cost_usd` included. Same standing convention applies: not
+patched (vendored source). **Net state:** per-hop cost is captured and genuinely visible to a
+human (or any tooling) that calls a specialist's own endpoint directly or reads its pod logs, but
+not to another agent delegating to it through the gateway's normal tool-call path — a real,
+confirmed limit on how much of a multi-hop chain's cost is observable from inside the chain
+itself, worth remembering for any future work on this.
+
+6.1 is now closed out — 6.1.1 through 6.1.4 all complete, with every open question either resolved
+or converted into a precisely root-caused, clearly-flagged limitation rather than left vague.
+
+---
+
 ## 6.2.1–6.2.2 — Cost MCP server + workload identity
 
 **Goal:** a federated MCP server exposing Azure Cost Management data
