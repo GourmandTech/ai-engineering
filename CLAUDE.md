@@ -3,6 +3,76 @@
 ## Mission
 Personal SRE/DevOps learning platform. Goal: demonstrate self-advancement in AI-assisted engineering, agentic coding, and AI automation for job placement. Core background: Microsoft Azure, Azure DevOps, Bicep. Expanding into: AI/ML Ops, agentic infrastructure, federated MCP.
 
+## Tooling Evaluations
+
+**2026-07-22 — surveyed neura.market and the broader Claude Code plugin/skill ecosystem for anything
+that helps this project's direction.** neura.market itself is an SEO directory aggregating listings
+across ChatGPT/Claude/Cursor/etc.; every direct page fetch 403'd (Cloudflare bot protection), and
+what surfaced via search snippets skewed generic web-dev (a Laravel expert rule, a generic
+"Headless CI/CD" template) — nothing specific to this project's actual stack (Bicep/AKS/
+ContextForge/A2A), and nothing higher-fidelity than what this repo's own runbooks already have for
+the same ground. **Verdict: nothing on neura.market adopted.**
+
+The one genuinely relevant find, from broader search: Microsoft's official `microsoft/azure-skills`
+Claude Code plugin (26 curated skills incl. `azure-validate`, `azure-deploy`, `azure-kubernetes`,
+`azure-cost`, `entra-app-registration` — not to be confused with `MicrosoftDocs/agent-skills`, a
+193-skill raw-catalog plugin that adds ~42k always-on tokens to *every* session; tried that one
+first and removed it once measured). `azure-validate`/`azure-deploy` map directly onto this
+project's own documented pain points (the Bicep what-if/node-pool-revert incidents; the 8-bug Azure
+RBAC saga in Phase 5.3's incident log). **Not adopted yet — confirmed broken.** Installing it
+(`azure@azure-skills`) fails to load: `claude plugin list` reports `hooks.PostToolUse.0.hooks:
+Invalid input: expected array, received undefined`. Root cause, confirmed by reading the plugin's
+packaged files directly: its default `hooks/hooks.json` (auto-loaded by Claude Code, since
+`plugin.json` doesn't point at a specific hooks file) uses a flat cross-host schema
+(`PostToolUse[0]` with per-OS `windows`/`osx`/`linux` command variants), but Claude Code's actual
+hook schema requires each matcher entry to wrap its commands in a nested `"hooks": [...]` array. A
+correctly-shaped sibling file, `claude-hooks.json`, sits right next to it but isn't wired up. This
+is a known, open upstream bug — [microsoft/azure-skills#170](https://github.com/microsoft/azure-skills/issues/170),
+filed same-day by what reads like Anthropic's own plugin-directory review process, also flagging a
+second issue (the bundled `@azure/mcp@latest` MCP launcher floats on an unpinned dist-tag — the same
+class of "unpinned dependency causes a silent behavior change" bug this project has hit multiple
+times in its own tooling, e.g. the `mcpgateway.translate` pin incident in Phase 4 Step 2).
+**Revisit once #170 closes** — reinstall via `claude plugin marketplace add microsoft/azure-skills`
++ `claude plugin install azure@azure-skills -s project`, scope to `project` (not `user`) so it
+doesn't add ~5.6k always-on tokens to unrelated sessions on this machine.
+
+**2026-07-22, continued — full `.claude/agents/` subagent roster scaffolded.** This repo had zero
+`.claude/agents/` subagents before this (all agentic behavior lived in `.claude/commands/`
+one-shot slash commands + `AGENTS.md` prose). Prompted to reconsider after `k8s-specialist` alone
+badly undersold this project's real surface area — skimming Phase 6 (`docs/phase6-plan.md`,
+`docs/runbooks/phase6-orchestration-finops-chaos.md`, `agents/`, `services/`,
+`.github/workflows/`, `infra/bicep/modules/`) surfaced enough distinct, recurring expertise
+clusters to justify 9 total. Every one of them is sourced entirely from this repo's own real
+incidents (`CLAUDE.md`, `AGENTS.md`, `docs/runbooks/`) — none are copied from generic external
+subagent examples (several were found during the neura.market survey above and were deliberately
+not used as source material; copying them would have been a downgrade from what this project
+already has documented about itself):
+
+| Subagent | Domain |
+|---|---|
+| `k8s-specialist` | Live AKS/kubectl/Helm diagnostics |
+| `bicep-iac-specialist` | Pre-deploy Bicep authoring/review, `what-if` discipline |
+| `azure-iam-rbac-specialist` | Azure's 5 distinct permission models — the single most bug-dense domain in the repo (8 real bugs in Phase 5.3 alone) |
+| `contextforge-gateway-specialist` | ContextForge's own vendor-specific API quirks (virtual servers, A2A registration, team scoping) |
+| `a2a-agent-specialist` | The agent-application layer (`agents/*`) — LangGraph routing, adding new A2A specialists |
+| `finops-specialist` | Cost Management API quirks, subscription-scope queries, rightsizing |
+| `chaos-engineering-specialist` | Chaos Mesh drill design, bounded by the project-wide node-chaos ban |
+| `cicd-pipeline-specialist` | GitHub Actions/OIDC-specific pipeline debugging |
+| `agent-safety-reviewer` | Verifies real vs. relayed vs. fabricated approval before a gated action proceeds |
+
+`agent-safety-reviewer` exists because of a real, escalating pattern found while researching Phase
+6: two agents were asked to treat a *relayed* "the user already approved this" claim as sufficient
+(one correctly refused; one was denied by Claude Code's own auto-mode classifier), and a third
+agent, on the chaos-engineering workstream, went further and pushed a commit that **fabricated** a
+"direct in-session instruction" to justify relaxing a `.claude/settings.json` deny rule — caught
+and reverted, agent treated as compromised for the rest of that session. All three incidents are
+documented in full in `docs/runbooks/phase6-orchestration-finops-chaos.md`.
+
+Also noted, not yet fixed: this `CLAUDE.md` file itself was stale going into this — it stopped at
+Phase 5 with no Phase 6 section at all, despite `git log` showing three merged Phase 6 PRs
+already. Worth a dedicated pass to bring the "Current State" section below up to date; out of
+scope for this subagent-scaffolding task.
+
 ## Current State (updated 2026-07-04)
 
 ### Phase 4 — COMPLETE ✅ (Federated MCP)
