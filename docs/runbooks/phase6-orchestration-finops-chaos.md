@@ -236,6 +236,74 @@ selection — no hardcoded `if "github" in task` branching anywhere in `coordina
 
 ---
 
+## 6.1.3 — Multi-hop delegation: sre-agent → dev-agent
+
+**Goal:** confirm a specialist agent (not just the coordinator) can delegate to *another*
+specialist through the gateway — proving the A2A pattern composes, not just that a coordinator
+can fan out to leaf specialists.
+
+**Research resolved before starting (per `docs/phase6-execution-plan.md`, not re-derived):**
+the gateway's `uaid_max_federation_hops` guard exists for cross-*gateway* federation loops, not
+same-gateway nested tool calls — this scenario (`sre-agent`, itself an A2A specialist, calling
+another tool through the same gateway it's already connected to) is an ordinary nested MCP tool
+call, not something the hop-count guard would ever see or block. The actual open question was
+narrower: whether `sre-agent`'s own token/virtual-server scope included `a2a-dev-agent` at all.
+It didn't — confirmed and fixed below.
+
+### Real finding — `mcp-attach-a2a-agent` had a second latent bug: it replaced `associated_a2a_agents` instead of merging it
+
+Checking `sre-full` before attaching anything: it already had one entry in `associatedA2aAgents`
+(`633ac069...`, `sre-agent`'s own self-registration from Phase 5.2). The Makefile target's
+existing `associated_a2a_agents` handling set a bare `["$(AGENT_ID)"]` — correct the *first* time
+the target is ever run against a given server (nothing to lose), but a real regression waiting to
+happen the moment it's reused against a server that already has an A2A relationship, exactly
+this case. Fixed to merge this field the same way `associated_tools` already was (read current
+list from `GET /servers`, append, dedupe) — verified the fix live: after attaching `dev-agent`,
+`sre-full.associatedA2aAgents` correctly shows **both** `633ac069...` (sre-agent) and
+`164ccaa0...` (dev-agent), neither dropped.
+
+### Design decision — attach `a2a-dev-agent` to `sre-full` directly, not a new dedicated server
+
+Confirmed with the real user before touching production (the auto-mode classifier correctly
+flagged this as a cross-team RBAC mutation that "continue 6.1.3" alone didn't specifically
+authorize). Considered a `coordinator-delegate`-style narrow dedicated server for `sre-agent`'s
+own delegation scope instead, but rejected it: `coordinator-delegate` exists specifically to
+structurally prevent the *coordinator's* model from bypassing delegation and calling
+`kubernetes-mcp-*`/`prometheus-mcp-*` directly — a real concern for an orchestrator whose only
+job is to delegate. `sre-agent` has no equivalent bypass risk to guard against; it's already the
+specialist with full direct `sre-full` access, and letting it *also* delegate one dev-domain
+sub-task doesn't create a new one. Reusing `sre-full` was also the minimal-blast-radius option:
+zero new virtual server, zero token re-minting, zero `agent.py` env var changes — and
+`a2a-dev-agent`'s tool was already `visibility: public` from 6.1.1, so this is a new attachment
+point for an already-approved setting, not a fresh widening decision.
+
+### Live verification (2026-07-22) — real, end-to-end, protocol-level confirmed
+
+- `sre-full`'s live `tools/list`, queried with `sre-agent`'s own real (non-admin, non-platform-admin)
+  token via the raw MCP protocol (`mcp.client.sse`, not just a REST field): **88 tools**, including
+  both `a2a-sre-agent` and `a2a-dev-agent`.
+- Updated `agents/sre-agent/agent.py`'s system prompt to mention the new delegation tool by name
+  and when to use it (dev-domain tasks) — mirrors the same system-prompt-driven routing approach
+  6.1.2 already proved works, rather than any hardcoded branching.
+- Real task: *"Delegate to your dev-agent tool: look up the contents of the README.md file (or
+  top-level file listing if README doesn't exist) in the GourmandTech/ai-engineering GitHub
+  repository."* Run directly against the live gateway (same pattern as 6.1.2's local verification
+  runs), cost `$0.4479`.
+- **Confirmed via logs on both hops, not just the plausible-sounding final answer:**
+  - Gateway: `Invoking tool: a2a-dev-agent ... server_id=7c7b4364c6214f089e847802819b7f2f` (sre-full's
+    id) → `Calling A2A agent 'dev-agent' at http://dev-agent.mcp.svc.cluster.local:8000/run`.
+  - `dev-agent`'s own pod logs: real downstream GitHub tool call and a result matching what
+    `sre-agent`'s final answer reported verbatim (repo root listing — no `README.md`, real
+    `AGENTS.md`/`CLAUDE.md`/`Makefile`/etc. file sizes).
+- **Downgrade confirmed correct, per the execution plan's own framing:** this was genuinely "a
+  config task, verify with one live call" rather than "might not work" — no code-level block was
+  ever hit, the only real gap was the RBAC attachment (and the latent merge bug it surfaced), both
+  fixed above.
+
+6.1.3 is complete. 6.1.4 (delegation-chain observability, closing out 6.1) is next.
+
+---
+
 ## 6.2.1–6.2.2 — Cost MCP server + workload identity
 
 **Goal:** a federated MCP server exposing Azure Cost Management data

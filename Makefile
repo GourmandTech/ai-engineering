@@ -692,13 +692,23 @@ mcp-attach-a2a-agent: ## Attach a registered A2A agent to an existing virtual se
 	@# display-only field that returns tool *names*, confirmed live 2026-07-21,
 	@# not IDs, despite the similar field name) — merging that field's contents
 	@# instead would silently corrupt the server's tool list on the next PUT.
+	@# Real bug #2 (found 2026-07-22, Phase 6.1.3): this target used to PUT
+	@# associated_a2a_agents as a bare single-element list, REPLACING whatever
+	@# was already there — harmless for coordinator-delegate (started empty),
+	@# but would have silently dropped sre-full's own pre-existing self-reference
+	@# to sre-agent's A2A registration the first time this target was reused on
+	@# an already-populated server. Fixed to merge this field the same way
+	@# associated_tools already was.
 	@CURRENT_TOOL_IDS=$$(curl -sf "$(GATEWAY_URL)/servers?limit=0" -H "Authorization: Bearer $(JWT_TOKEN)" \
 	  | jq -c --arg id "$(SERVER_ID)" '[.[] | select(.id==$$id)][0].associatedToolIds // []'); \
+	CURRENT_A2A_AGENTS=$$(curl -sf "$(GATEWAY_URL)/servers?limit=0" -H "Authorization: Bearer $(JWT_TOKEN)" \
+	  | jq -c --arg id "$(SERVER_ID)" '[.[] | select(.id==$$id)][0].associatedA2aAgents // []'); \
 	MERGED_TOOLS=$$(echo $$CURRENT_TOOL_IDS | jq -c --arg t "$(NEW_TOOL_ID)" '. + [$$t] | unique'); \
+	MERGED_A2A_AGENTS=$$(echo $$CURRENT_A2A_AGENTS | jq -c --arg a "$(AGENT_ID)" '. + [$$a] | unique'); \
 	curl -sX PUT $(GATEWAY_URL)/servers/$(SERVER_ID) \
 	  -H "Authorization: Bearer $(JWT_TOKEN)" \
 	  -H "Content-Type: application/json" \
-	  -d "{\"associated_a2a_agents\": [\"$(AGENT_ID)\"], \"associated_tools\": $$MERGED_TOOLS}" \
+	  -d "{\"associated_a2a_agents\": $$MERGED_A2A_AGENTS, \"associated_tools\": $$MERGED_TOOLS}" \
 	  | jq .
 
 # ─────────────────────────────────────────────────────────────
