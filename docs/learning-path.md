@@ -92,9 +92,50 @@ Tasks:
 - [x] Add GitHub Actions CI/CD: lint → helm diff → deploy on merge — `.github/workflows/ci.yml`
   (unguarded, Reader-only Azure OIDC) + `deploy.yml` (gated by a required-reviewer `production`
   GitHub Environment, Contributor+RBAC-Admin Azure OIDC, separate app registration from CI's).
-- [ ] Run `/resume-update` — pending PR merge
+- [x] Run `/resume-update`
 
 Full write-up (architecture, every real bug hit and fixed): `docs/runbooks/phase5-agent-automation.md`.
 Condensed status: `CLAUDE.md` Phase 5 section. Original plan: `docs/phase5-plan.md`.
 
 **5.4 (stretch) — OTel tracing on the agents:** not started.
+
+---
+
+## Phase 6: Multi-Agent Orchestration, FinOps, Chaos Engineering 🔄 IN PROGRESS (6.1.1-6.1.2, 6.2.1-6.2.2, 6.3.1-6.3.2 done)
+**Goal:** extend A2A delegation to real multi-specialist routing, add AI-assisted Azure cost
+analysis, and stand up chaos-engineering readiness on the production cluster — three parallel
+pillars designed together (`docs/phase6-plan.md`) and executed in waves (`docs/phase6-execution-plan.md`).
+
+Resources:
+- [A2A Agent Integration](https://ibm.github.io/mcp-context-forge/latest/using/agents/a2a/)
+- [Azure Cost Management API](https://learn.microsoft.com/en-us/rest/api/cost-management/)
+- [Chaos Mesh Documentation](https://chaos-mesh.org/docs/)
+
+Tasks:
+- [x] Add a second A2A specialist to prove the RBAC/A2A pattern generalizes — `agents/dev-agent/`
+  (GitHub + Azure DevOps via `dev-tools`), registered team-scoped to `dev-team`; found and fixed a
+  real two-layer cross-team RBAC gap (server-level team membership *and* a separate per-tool
+  visibility check) before the coordinator could actually see it.
+- [x] Build dynamic LangGraph routing across both specialists — `agents/coordinator-agent/coordinator.py`
+  now chooses the correct specialist per task via a system prompt + native tool selection (not
+  hardcoded branching), with an explicit fallback-to-other-specialist retry path on repeated failure;
+  verified live with two different tasks correctly routed to two different agents in one run.
+- [x] Build and deploy a FinOps MCP server — `services/cost-mcp-server/` exposes live Azure Cost
+  Management data (by service, by resource, trend) via the project's first subscription-scope
+  workload identity, confirmed necessary after an RG-scoped query was shown to miss ~91% of real
+  spend (AKS node VMs live in the AKS-managed node resource group, not the app RG).
+- [x] Install Chaos Mesh and prove an observe-only baseline drill — controller-only install (chart
+  2.8.3, containerd runtime override, no dashboard) on the live AKS cluster with a data-driven
+  CPU-headroom go/no-go check before and after, zero fault CRDs ever created; a health-fingerprint
+  drill (`agents/sre-agent/baseline_drill.py`) proves the evaluation harness works before any future
+  fault injection is allowed.
+- [ ] 6.1.3 — multi-hop delegation (specialist → specialist) — not started.
+- [ ] 6.1.4 — delegation-chain observability (A2A metrics, per-hop token cost) — not started.
+- [ ] 6.2.3-6.2.4 — FinOps rightsizing agent, recommend-only — not started.
+- [ ] 6.3.3+ — gated fault-injection drills (pod-kill, NetworkPolicy) — deliberately deferred, requires
+  human approval on every run per the plan's own non-negotiable guardrails.
+- [ ] Run `/resume-update`
+
+Full write-up (every real bug/finding, including two real AI-agent trust incidents caught and
+corrected during multi-agent delegation): `docs/runbooks/phase6-orchestration-finops-chaos.md`.
+Design + execution plan: `docs/phase6-plan.md`, `docs/phase6-execution-plan.md`.
