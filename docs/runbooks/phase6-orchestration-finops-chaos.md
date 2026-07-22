@@ -277,20 +277,60 @@ Full JSON fingerprint (trimmed `/health` body, full `/metrics` summary, full age
 captured in the PR description / this session's output — see `baseline_drill.py`'s `main()` for
 the exact fields recorded.
 
-### Verification bar — status against this wave's own checklist
+### 6.3.1 — Chaos Mesh install: completed in a follow-on session (2026-07-22)
 
-1. ✅ `kubectl top nodes` / `kubectl describe node` before: captured above (finding #1).
-2. ❌ Install: **not run** — blocked by the hard permission deny (finding #3). Command fully
-   assembled and its chart-schema correctness independently verified.
-3. ❌ Chaos Mesh pod health: nothing installed, nothing to check.
-4. ❌ "After" `kubectl top nodes`: no after-state exists.
-5. ✅ Baseline drill: run for a real fingerprint, full output captured (see 6.3.2 above).
+Picked up directly (not delegated to a background agent, given the prior session's compromised-
+agent incident on this exact workstream — see the security-finding cross-reference in the
+6.2 section). The real project owner confirmed directly, in this exact conversation, both (a)
+narrowing `.claude/settings.json`'s blanket `helm upgrade:*`/`helm install:*` deny to scope-in
+just the new `chaos-mesh` release (same design finding #3 above already worked out, now actually
+authorized for real rather than fabricated) and (b) the install itself.
+
+**Settings change** — same shape finding #3 described: blanket denies for `helm upgrade`/
+`helm install`/`helm uninstall` replaced with per-release denies for the 4 existing production
+releases (`mcp-stack`, `ingress-nginx`, `cert-manager`, `kube-prom`), plus a narrow allow for
+`helm upgrade --install chaos-mesh:*` / `helm uninstall chaos-mesh:*` specifically.
+
+**Pre-install check (re-confirmed, since headroom had drifted again):** `aks-system-...000000`
+at 82% CPU-requested, `...000002` at 66% — consistent with the prior session's 82%/64%
+measurement, comfortably under the 90% go/no-go bar.
+
+**Install:** `helm upgrade --install chaos-mesh chaos-mesh/chaos-mesh` with the exact assembled
+command from finding #2/#3 (chart 2.8.3, `chaosDaemon.runtime=containerd` +
+`socketPath=/run/containerd/containerd.sock`, `controllerManager.replicaCount=1`,
+`dashboard.create=false`) — succeeded on the first real attempt, `STATUS: deployed`.
+
+**Post-install verification:**
+- 4 pods, all `1/1 Running`, 0 restarts: `chaos-controller-manager` (1 replica, as configured),
+  2× `chaos-daemon` (DaemonSet, one per node), and `chaos-dns-server` — a chart-default component
+  neither this nor the prior session's plan had explicitly called out (used for DNS-based chaos
+  experiments; healthy, not a scope concern, since only the controller/daemon matter for this
+  wave's actual guardrails).
+- **CPU-requested after:** `...000000` unchanged at 82% (nothing scheduled there beyond the
+  DaemonSet pod, which the chart leaves with no explicit resource request — so it doesn't move
+  the "requested" percentage at all, only real usage during actual fault runs, consistent with
+  finding #2's "smaller footprint than assumed" observation), `...000002` rose from 66% → 73%
+  (controller-manager + dns-server landed there). Both nodes stayed well clear of the 90% bar —
+  confirms the original go/no-go analysis held.
+- **CRDs registered, zero fault resources exist:** `kubectl get crd | grep chaos` shows all 22
+  expected Chaos Mesh CRD kinds (`podchaos`, `networkchaos`, `stresschaos`, etc.);
+  `kubectl get podchaos,networkchaos,stresschaos,iochaos -A` returns nothing — confirms this is
+  genuinely controller-only, no fault CR created or drafted, matching the hard scope boundary for
+  this wave.
+- **Baseline drill re-run** with `chaos-mesh` now actually present: all 6 MCP-side pods
+  (5 federated MCP servers + sre-agent) `Running`/`Ready`, 0-1 restarts (sre-agent's single
+  restart pre-dates this session, stable since), same 3 expected control-plane-scrape-gap
+  `critical` alerts plus `KubeCPUOvercommit` warning as the prior baseline run — steady state
+  confirmed unaffected by the new installation.
+
+### Verification bar — final status against this wave's own checklist
+
+1. ✅ `kubectl top nodes` / `kubectl describe node` before: captured (finding #1, re-confirmed above).
+2. ✅ Install: complete, `STATUS: deployed`, first real attempt.
+3. ✅ Chaos Mesh pod health: all 4 pods `1/1 Running`, 0 restarts.
+4. ✅ "After" `kubectl top nodes`: captured above — both nodes stayed under the 90% bar.
+5. ✅ Baseline drill: run twice (pre- and post-install), both real fingerprints captured.
 6. ✅ This runbook entry.
 
-**What's needed to close this out:** either a human runs the assembled command directly (not
-through an agent session bound by this `deny` rule), or the real user explicitly relaxes the
-`helm upgrade:*`/`helm install:*` deny entries (even temporarily, even scoped more narrowly to
-`helm upgrade:chaos-mesh*` / `helm install:chaos-mesh*` if a narrower carve-out is preferred) so
-that a future agent session can actually apply it. Once installed, the remaining steps (pods
-`Running`, "after" `kubectl top nodes`, re-running `baseline_drill.py` to fold in an actual
-`chaos-mesh` namespace's presence) are mechanical and unblocked by anything else in this writeup.
+6.3.1 and 6.3.2 are both complete. Fault-injection drills (6.3.3+) remain a separate, explicitly
+gated future wave — nothing in this session created or ran any fault CR.
