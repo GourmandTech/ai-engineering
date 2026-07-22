@@ -1,4 +1,5 @@
 .PHONY: help up down logs test \
+        chart-fetch chart-verify \
         minikube-start helm-install helm-upgrade helm-status helm-diff helm-diff-aks helm-uninstall \
         az-login bicep-validate bicep-deploy aks-creds helm-aks \
         mcp-register mcp-status port-forward \
@@ -70,13 +71,19 @@ test: ## Smoke test MCP endpoints
 # ─────────────────────────────────────────────────────────────
 # Minikube — Local Kubernetes
 # ─────────────────────────────────────────────────────────────
-chart-fetch: ## Clone ContextForge upstream repo (run once before helm-install)
+CONTEXTFORGE_CHART_REF ?= v1.0.6
+
+chart-fetch: ## Clone ContextForge upstream repo, pinned to CONTEXTFORGE_CHART_REF (run once before helm-install)
 	@if [ -d ".contextforge" ]; then \
 	  echo "✓ .contextforge already present. Remove it first to re-fetch."; \
 	else \
-	  git clone --depth 1 https://github.com/IBM/mcp-context-forge.git .contextforge; \
-	  echo "✓ Chart available at .contextforge/charts/mcp-stack"; \
+	  git clone --quiet --depth 1 --branch $(CONTEXTFORGE_CHART_REF) https://github.com/IBM/mcp-context-forge.git .contextforge; \
+	  echo "✓ Chart available at .contextforge/charts/mcp-stack (pinned to $(CONTEXTFORGE_CHART_REF))"; \
 	fi
+
+chart-verify: chart-fetch ## Render the chart and fail if any container has runAsNonRoot=true with no runAsUser (see 2026-07-22 postgres/redis outage)
+	helm template $(HELM_RELEASE) $(HELM_CHART) -f $(HELM_VALUES) -f $(HELM_VALUES_AKS) \
+	  | python3 scripts/verify-chart-security-context.py
 
 minikube-start: ## Start Minikube cluster (profile: mcpgw) with ingress + ingress-dns
 	@# Devcontainer runs docker-in-docker: the Docker daemon is local to this
