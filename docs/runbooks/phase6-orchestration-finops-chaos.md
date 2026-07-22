@@ -365,22 +365,61 @@ follow-up — real calls I've confirmed succeeded are far more common than this 
 which may mean this metric counts something more granular than whole-task success (e.g. individual
 retry/timeout sub-events within one multi-tool-call session) — flagged, not chased further here.
 
-### Grafana panel — not added; requires a real infra decision, not made unilaterally here
+### Grafana panel — added in a follow-on session, self-hosted (not Grafana Cloud)
 
-Checked what's actually live before promising a panel: `kubectl exec` into `kube-prom-grafana`
-shows only the default kube-prometheus-stack bundled app plugins
-(`grafana-exploretraces-app`/`grafana-lokiexplore-app`/`grafana-metricsdrilldown-app`/
-`grafana-pyroscope-app`) — **no JSON/HTTP API datasource plugin** (e.g. the common
-`yesoreyeram-infinity-datasource`) is installed. Separately, `GET /metrics/prometheus` (this
-project's actual Prometheus-scrapeable endpoint) only exposes generic per-HTTP-route metrics
-(`http_requests_total{handler="/admin/a2a/partial",...}`) — **no per-tool or per-agent labeled
-Prometheus series exist at all**, confirmed by grepping the full scrape output. So neither of the
-two paths to a real Grafana panel (native PromQL against an existing scrape target, or a JSON
-datasource against `/admin/metrics`) is available without a genuine new infra change (installing a
-Grafana plugin via Helm values + restart) — not something to do unilaterally mid-wave. Flagging
-this to the real project owner as an open decision rather than forcing a low-quality substitute;
-`GET /admin/metrics`'s `topPerformers.tools[]` (above) is the correct query to wire up once a
-decision is made on how to get it into Grafana.
+Originally left as an open decision (see below for the state at that point) rather than forced
+mid-wave, since it genuinely needed a new infra change. Real project owner explicitly considered
+Grafana Cloud (free tier) vs. self-hosting further and chose **self-hosted**: this project's whole
+resume-facing narrative is "operates its own infrastructure end-to-end" (self-hosted
+Postgres/Redis/cert-manager/Chaos Mesh/Prometheus already), and the actual metrics gap (below)
+is orthogonal to Grafana Cloud vs. self-hosted either way — Cloud would only have solved the
+missing-plugin half of the problem, at the cost of a new external vendor dependency for zero
+functional gain over the self-hosted fix (confirmed via `grafana.plugins:` in kube-prometheus-stack's
+own Helm values — a standard, documented mechanism, not a hack).
+
+**What was built:**
+- `infra/helm/values.monitoring.yaml` — brings `kube-prom` (originally installed 2026-07-03 as a
+  bare `helm install` with zero tracked values) under this repo's own IaC conventions for the first
+  time, adding `grafana.plugins: [yesoreyeram-infinity-datasource]`. Applied via a new
+  `make monitoring-upgrade` target (needed a scoped `.claude/settings.json` allow for
+  `helm upgrade --install kube-prom:*`, confirmed directly with the real user first — same
+  narrow-carve-out pattern as the Chaos Mesh precedent, `helm uninstall kube-prom:*` deliberately
+  left denied). Verified live: `kubectl exec ... ls /var/lib/grafana/plugins` shows
+  `yesoreyeram-infinity-datasource` installed alongside the pre-existing bundled app plugins, all
+  monitoring pods `Running` post-upgrade.
+- A dedicated ContextForge API token (`grafana-monitoring-readonly`, 90-day expiry, stored in Key
+  Vault as `grafana-admin-metrics-token`) — confirmed with the real user first that this
+  specifically has to be admin-tier (no scoped-token path exists for `/admin/metrics`, unlike every
+  other token in this project) before creating it.
+- `infra/grafana/a2a-agent-dashboard.json` + `scripts/grafana-provision-a2a-dashboard.sh` +
+  `make grafana-provision-dashboard` — idempotently creates/updates the Infinity datasource (proxy
+  mode, bearer-token auth to `https://contextforge.gourmandtech.com`) and a two-panel dashboard:
+  **A2A Agent Performance** (`topPerformers.tools[]`, filtered to `a2a-*` via Grafana's native
+  `filterByValue` transform) and, as a low-cost bonus from the same query shape, **Virtual Server
+  Performance** (`topPerformers.servers[]` — `sre-full`/`dev-tools`/`coordinator-delegate`,
+  directly relevant to this project's own "virtual servers as the RBAC boundary" design).
+
+**Real finding — Infinity's `filterExpression` query field didn't work as documented/assumed.**
+Tried filtering server-side first via a filterExpression field, but the raw query
+result showed all 10 tool rows unfiltered — confirmed this wasn't an auth/data problem (the same
+query without a filter correctly returns all real rows, `a2a-sre-agent`/`a2a-dev-agent` included).
+Rather than keep guessing at Infinity's exact filter DSL, switched to Grafana's own well-documented,
+plugin-agnostic `filterByValue` transformation (a regex match on the rendered `Agent` column) —
+more reliable than a plugin-specific expression syntax, and confirmed saved correctly in the
+dashboard JSON via `GET /api/dashboards/uid/...`.
+
+**Real finding — Infinity's `root_selector` needs `"parser": "backend"` set explicitly for nested
+dot-path selectors to work at all.** The first attempt (`root_selector: "topPerformers.tools"`,
+no `parser` field) returned an empty table (`{"values": []}`) even though the *same* query's
+`meta.custom.data` field showed the full, correct, real JSON response had been fetched successfully
+(`"responseCodeFromServer": 200`) — proving the HTTP fetch and auth were fine and the gap was
+purely in Infinity's own field-extraction step. Adding `"parser": "backend"` fixed it immediately;
+documented directly in `infra/grafana/a2a-agent-dashboard.json`'s own query definitions so this
+doesn't need rediscovering.
+
+Live-verified via `POST /api/ds/query` (not just "looks right in the JSON") that the panel's real
+query returns genuine data: `a2a-sre-agent` (24 executions, ~31.8s avg response, 20.8% success) and
+`a2a-dev-agent` (5 executions, ~13.4s avg response, 100% success) both present and correct.
 
 ### Per-hop Claude API token cost tracking — implemented and verified live
 

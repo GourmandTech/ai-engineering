@@ -1,0 +1,90 @@
+{
+  "title": "ContextForge A2A Agents (Phase 6.1.4)",
+  "uid": "contextforge-a2a-agents",
+  "tags": ["contextforge", "a2a", "phase6"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "A2A Agent Performance (per-agent execution count / avg response time / success rate)",
+      "description": "Real per-agent execution stats. Source: GET /admin/metrics's topPerformers.tools[], filtered to a2a-* tool names — a2aAgents.totalInteractions is a confirmed-dead upstream metric (see docs/runbooks/phase6-orchestration-finops-chaos.md Sec 6.1.4); this is the actual working data source, recorded under the generic 'tool' metric type since every real A2A call in this project happens via the MCP tool-call path, not the dedicated /a2a/invoke REST endpoints.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_UID}" },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "/admin/metrics",
+          "url_options": { "method": "GET" },
+          "root_selector": "topPerformers.tools",
+          "columns": [
+            { "selector": "name", "text": "Agent", "type": "string" },
+            { "selector": "executionCount", "text": "Executions", "type": "number" },
+            { "selector": "avgResponseTime", "text": "Avg Response Time (s)", "type": "number" },
+            { "selector": "successRate", "text": "Success Rate (%)", "type": "number" },
+            { "selector": "lastExecution", "text": "Last Execution", "type": "timestamp" }
+          ]
+        }
+      ],
+      "transformations": [
+        {
+          "id": "filterByValue",
+          "options": {
+            "filters": [
+              { "fieldName": "Agent", "config": { "id": "regex", "options": { "value": "^a2a-" } } }
+            ],
+            "type": "include",
+            "match": "any"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "none" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Avg Response Time (s)" }, "properties": [{ "id": "unit", "value": "s" }] },
+          { "matcher": { "id": "byName", "options": "Success Rate (%)" }, "properties": [{ "id": "unit", "value": "percent" }] }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Virtual Server Performance (RBAC-boundary-level stats)",
+      "description": "Same working data source as the panel above, one level up: per-virtual-server stats (sre-full, dev-tools, coordinator-delegate) from topPerformers.servers[]. Included since it's the same query shape and directly relevant to this project's 'virtual servers as the RBAC boundary' design — coordinator-delegate's own success rate here is a useful proxy for delegation-chain health.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_UID}" },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "/admin/metrics",
+          "url_options": { "method": "GET" },
+          "root_selector": "topPerformers.servers",
+          "columns": [
+            { "selector": "name", "text": "Virtual Server", "type": "string" },
+            { "selector": "executionCount", "text": "Executions", "type": "number" },
+            { "selector": "avgResponseTime", "text": "Avg Response Time (s)", "type": "number" },
+            { "selector": "successRate", "text": "Success Rate (%)", "type": "number" },
+            { "selector": "lastExecution", "text": "Last Execution", "type": "timestamp" }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "none" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Avg Response Time (s)" }, "properties": [{ "id": "unit", "value": "s" }] },
+          { "matcher": { "id": "byName", "options": "Success Rate (%)" }, "properties": [{ "id": "unit", "value": "percent" }] }
+        ]
+      }
+    }
+  ]
+}

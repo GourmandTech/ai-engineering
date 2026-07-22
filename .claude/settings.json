@@ -40,6 +40,9 @@
       "Bash(helm repo update chaos-mesh)",
       "Bash(helm upgrade --install chaos-mesh:*)",
       "Bash(helm uninstall chaos-mesh:*)",
+      "Bash(helm repo add prometheus-community:*)",
+      "Bash(helm repo update prometheus-community)",
+      "Bash(helm upgrade --install kube-prom:*)",
       "Bash(az role definition create --role-definition docs/runbooks/cost-mcp-role-assignment-grantor-role.json)",
       "Bash(az role assignment create --assignee 45da7aa5-98df-4a4a-a69f-c03a753259d7 --role \"Cost MCP Role-Assignment Grantor (custom, Phase 6.2 deploy)\" --scope /subscriptions/b5d1ee02-5ad0-44d6-9b14-80e38c714404 --condition-version 2.0 --condition \"((!(ActionMatches{'Microsoft.Authorization/roleAssignments/write'})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {72fafb9e-0641-4937-9268-a91bfd8191a3}))\")"
     ],
@@ -50,7 +53,6 @@
       "Bash(helm upgrade --install mcp-stack:*)",
       "Bash(helm upgrade --install ingress-nginx:*)",
       "Bash(helm upgrade --install cert-manager:*)",
-      "Bash(helm upgrade --install kube-prom:*)",
       "Bash(helm uninstall mcp-stack:*)",
       "Bash(helm uninstall ingress-nginx:*)",
       "Bash(helm uninstall cert-manager:*)",

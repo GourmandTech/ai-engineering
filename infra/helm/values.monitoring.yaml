@@ -1,0 +1,21 @@
+# kube-prometheus-stack overrides — Phase 6.1.4 follow-up.
+#
+# `kube-prom` (namespace `monitoring`) was originally installed 2026-07-03 as a
+# bare `helm install kube-prom prometheus-community/kube-prometheus-stack -n
+# monitoring --create-namespace` with zero values — a prerequisite for
+# prometheus-mcp-server, not tracked in this repo's own IaC. This file brings
+# it under version control the same way every other release in this project
+# already is (values.yaml/values.azure.yaml for mcp-stack).
+#
+# Goal: install the Infinity data source plugin (yesoreyeram-infinity-datasource)
+# so Grafana can query ContextForge's own GET /admin/metrics REST endpoint
+# directly — the real per-agent execution-count/success-rate/response-time data
+# confirmed live in Phase 6.1.4 (a2aAgents.totalInteractions is a confirmed
+# upstream dead metric; /admin/metrics's topPerformers.tools[] is the actual
+# working source). ContextForge's own /metrics/prometheus endpoint has no
+# per-tool/per-agent labeled series at all, so a native PromQL panel isn't
+# possible regardless of plugin — this is why a JSON-datasource plugin is
+# needed rather than a normal Prometheus scrape target.
+grafana:
+  plugins:
+    - yesoreyeram-infinity-datasource
