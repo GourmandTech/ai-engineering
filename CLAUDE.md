@@ -485,7 +485,8 @@ Deploying IBM ContextForge — an open-source AI Gateway that federates MCP serv
 | 2 | Minikube — deploy full Helm stack, learn k8s primitives | ✅ |
 | 3 | AKS — deploy to Azure with Bicep IaC, production-grade config | ✅ |
 | 4 | Federated MCP — register multiple MCP servers, RBAC + OAuth | ✅ |
-| 5 | Agent automation — A2A protocol, multi-agent orchestration | 🔄 (5.1 done) |
+| 5 | Agent automation — A2A protocol, multi-agent orchestration, CI/CD | ✅ (5.1-5.3 done, 5.4 stretch pending) |
+| 6 | Multi-agent orchestration, FinOps, chaos engineering | 🔄 (6.1.1-6.1.2, 6.2.1-6.2.2, 6.3.1-6.3.2 done) |
 
 ---
 

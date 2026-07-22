@@ -9,6 +9,7 @@
         sre-agent-build sre-agent-deploy \
         dev-agent-build dev-agent-deploy \
         cost-mcp-build cost-mcp-deploy \
+        chaos-mesh-install chaos-mesh-uninstall \
         mcp-get-token mcp-list-gateways mcp-list-tools mcp-register-sre mcp-register-github mcp-register-azure-devops mcp-register-kubernetes mcp-register-prometheus mcp-register-cost \
         mcp-create-team mcp-list-teams mcp-create-server mcp-list-servers \
         mcp-create-scoped-token sre-agent-get-token coordinator-get-token dev-agent-get-token \
@@ -526,6 +527,24 @@ cost-mcp-deploy: aks-creds ## Deploy Cost MCP server to AKS (requires: make bice
 	kubectl rollout status deployment/cost-mcp-server -n $(NAMESPACE) --timeout=3m
 	@echo "✓ cost-mcp-server deployed"
 	@echo "  Verify workload identity token exchange: kubectl logs -n $(NAMESPACE) deploy/cost-mcp-server | grep -i azure"
+
+chaos-mesh-install: aks-creds ## Install Chaos Mesh (observe-only baseline, no fault CRDs applied) — controller only, containerd runtime, no dashboard
+	@echo "=== Installing Chaos Mesh (chart 2.8.3) ==="
+	helm repo add chaos-mesh https://charts.chaos-mesh.org 2>/dev/null || true
+	helm repo update chaos-mesh
+	helm upgrade --install chaos-mesh chaos-mesh/chaos-mesh \
+	  --namespace chaos-mesh --create-namespace \
+	  --version 2.8.3 \
+	  --set chaosDaemon.runtime=containerd \
+	  --set chaosDaemon.socketPath=/run/containerd/containerd.sock \
+	  --set controllerManager.replicaCount=1 \
+	  --set dashboard.create=false \
+	  --wait --timeout=5m
+	@echo "✓ Chaos Mesh installed. Verify: kubectl get pods -n chaos-mesh"
+
+chaos-mesh-uninstall: ## Remove Chaos Mesh and its namespace (no fault CRDs should exist at uninstall time — this wave never creates any)
+	helm uninstall chaos-mesh --namespace chaos-mesh
+	kubectl delete namespace chaos-mesh --ignore-not-found
 
 kubernetes-mcp-deploy: aks-creds ## Deploy Kubernetes MCP server to AKS (no build step — deploys the upstream quay.io image directly, no bicep-deploy prerequisite either — no Azure credential involved)
 	kubectl apply -f infra/k8s/kubernetes-mcp-server.yaml -n $(NAMESPACE)
