@@ -35,3 +35,6 @@ infra/helm/charts/
 
 # Azure deployment output artifacts
 azuredeploy.*.json
+
+# Personal Documentation
+private/*
