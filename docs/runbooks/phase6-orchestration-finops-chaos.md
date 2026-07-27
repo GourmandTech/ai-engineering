@@ -1121,3 +1121,106 @@ command from finding #2/#3 (chart 2.8.3, `chaosDaemon.runtime=containerd` +
 
 6.3.1 and 6.3.2 are both complete. Fault-injection drills (6.3.3+) remain a separate, explicitly
 gated future wave — nothing in this session created or ran any fault CR.
+
+---
+
+## 6.3.3-6.3.4 — Gated fault-injection drills
+
+**Goal:** a pod-kill drill and a NetworkPolicy/egress fault-injection drill, each requiring
+direct, real, per-run human approval — reusing the Phase 5.3 gated-Environment discipline in
+spirit, adapted to this session's actual tooling.
+
+### Gating mechanism — resolved directly with the real user before touching anything
+
+`kubectl apply`/`kubectl delete` are hard-denied in `.claude/settings.json` project-wide, and
+"human approval on every fault-injecting run" is this pillar's own non-negotiable rule (see
+6.3.1's own incident log for why a hard `deny` can never be satisfied by in-conversation
+approval alone). Presented three options directly: (a) a narrow, exact-match allow per drill,
+added immediately before and reverted immediately after each run: (b) have the user run the
+actual `kubectl apply`/`delete` themselves every time, zero settings.json changes ever; (c) a
+standing narrow allow left in place permanently. Chose (a) — narrowest option that doesn't
+require the user to hand-run commands, while genuinely requiring a fresh settings.json edit
+(and therefore a fresh explicit act) for every single run, unlike a standing allow.
+
+### Tooling built
+
+- `scripts/chaos_drill_lib.py` — shared mechanics: a hard `ALLOWED_TARGET_APPS` /
+  `HARD_DENIED_APPS` list (stateless MCP/agent pods only; gateway/postgres/redis/cert-manager/
+  ingress-nginx explicitly excluded — checked in code, not just documented), a dead-man's-switch
+  (polls gateway `/health`, deletes the manifest if unhealthy >30s), pod-ready polling, and an
+  "agent evaluation harness" helper that reuses `sre-agent`'s existing `/run` endpoint (no new
+  cluster access, per the plan's own instruction).
+- `infra/chaos/pod-kill-github-mcp.yaml` — `PodChaos`, `action: pod-kill`, `mode: one`, scoped to
+  exactly one pod via label selector. `pod-kill` is inherently one-shot/self-reverting (the
+  Deployment controller recreates the pod immediately) — no `duration` field applies.
+- `infra/chaos/network-partition-sre-agent-egress.yaml` — `NetworkChaos`, `action: partition`,
+  `direction: to`, targeting `sre-agent`'s egress to the gateway specifically — deliberately
+  re-exercising the exact path that broke by accident twice already in this project (Phase 4
+  kubernetes-mcp-server apiserver egress; Phase 5.2 sre-agent's own port-4444 egress, which hung
+  forever before `_wait_for_mcp_connection`'s `CONNECT_TIMEOUT_S=20` fix). Bounded `duration:
+  "30s"`, comfortably inside the project's ≤60s bound and long enough to clear the 20s internal
+  timeout at least once.
+- `scripts/chaos-drill-pod-kill.py` / `scripts/chaos-drill-network-partition.py` — the two drill
+  entrypoints, each: pre-flight checks (target allow-listed, gateway healthy, other apps
+  healthy) → applies the manifest under a live dead-man's-switch → drill-specific pass/fail
+  check → deletes the manifest → runs the agent-evaluation harness → prints a structured
+  PASS/FAIL report.
+
+### 6.3.3 — pod-kill drill on `github-mcp-server`: **PASS**, real, live
+
+Approved directly by the real user for this specific run; the exact-match allow was added,
+the drill run, then immediately reverted (confirmed via `git diff` on `.claude/settings.json`
+afterward showing no residual entries).
+
+- Target pod recovered (`Running`+`Ready`) in **15.4s** — well inside the 60s bound.
+- All 7 other watched apps (`azure-devops-mcp-server`, `cost-mcp-server`, `dev-agent`,
+  `kubernetes-mcp-server`, `prometheus-mcp-server`, `sre-agent`, `sre-mcp-server`) stayed
+  `Running`/`Ready` throughout — confirmed both before and after via direct `kubectl get pods`.
+- Gateway `/health` stayed `200` before and after.
+- Chaos CR cleanly deleted post-drill — `kubectl get podchaos,networkchaos -A` confirmed empty
+  immediately after.
+- **Agent evaluation harness** (`sre-agent`'s own `/run`, real Claude Agent SDK call, cost
+  `$0.2648`) independently confirmed: all 5 federated MCP servers + itself `Running`/`Ready`,
+  **0 restarts**, and — a nice independent confirmation the kill was real, not a no-op — the
+  recreated pod's own name suffix had changed (`-47tsc` → `-28hpl`), meaning a genuinely fresh
+  replica, not the original container surviving untouched. No MCP-attributable Prometheus alerts;
+  the 7 firing alerts were all the same standing AKS control-plane-scrape-gap/`Watchdog`/
+  `KubeCPUOvercommit` baseline noise already documented in every prior drill/baseline in this
+  runbook.
+- **Result: PASS.**
+
+### 6.3.4 — network-partition drill: blocked by a real, unrelated production incident before it could start
+
+Approved directly by the real user for this specific run. Before adding the settings.json allow
+or applying anything, the standing pre-drill discipline ("always re-check live state, don't
+trust a prior session's snapshot") caught a serious, completely unrelated problem:
+`https://contextforge.gourmandtech.com/health` returned `Connection refused` — not a DNS issue,
+an actual dead endpoint. Investigated with read-only commands only (no write attempted):
+
+- `az aks get-credentials` (a **read** action against AKS, despite the verb) failed outright:
+  `ERROR: (ReadOnlyDisabledSubscription) The subscription '...' is disabled and therefore marked
+  as read only. You cannot perform any write actions on this subscription until it is
+  re-enabled.`
+- `az account show` still reports the subscription's own `state` as `"Enabled"` — the mismatch
+  between that and the hard write-lock is itself a real, worth-remembering Azure quirk: a
+  billing-driven read-only enforcement doesn't necessarily flip the subscription's own
+  registration-state field.
+- `az aks show`: `provisioningState: Failed`, `powerState.code: Deallocated` — the cluster has
+  been powered off, not deleted.
+- `az resource list -g rg-contextforge-dev`: every expected resource (Key Vault, Log Analytics,
+  ACR, VNet, AKS, Container Insights, all 5 workload identities) is still present. Nothing has
+  been deleted.
+
+**Assessment: almost certainly a billing/spending-limit event on the sandbox subscription**,
+plausibly related to sustained real compute usage across Chaos Mesh, the growing agent fleet,
+and `cost-mcp-server` running continuously since Phase 6 started — not caused by anything in
+this session, and not something any Azure CLI action available here can fix (subscription-level
+billing locks require action in the Azure Portal, by the account owner directly). Stopped
+immediately rather than attempting any workaround — there is no live, healthy production system
+to safely run a fault-injection drill against right now, and running one on top of an existing,
+unrelated outage would itself be reckless.
+
+**6.3.4 remains not-run**, blocked on this being resolved. `scripts/chaos-drill-network-partition.py`
+and `infra/chaos/network-partition-sre-agent-egress.yaml` are complete and ready to run
+immediately once the cluster is back — no further tooling work is needed for 6.3.4, only the
+subscription being restored.

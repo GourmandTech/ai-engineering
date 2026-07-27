@@ -1,0 +1,24 @@
+# Phase 6.3.3 — pod-kill drill, github-mcp-server.
+#
+# Scope: exactly one pod, matched by label selector. `action: pod-kill` is a
+# one-shot fault — Chaos Mesh deletes the pod once; Kubernetes' own Deployment
+# controller recreates it immediately (this is the drill's built-in "auto
+# revert", not something Chaos Mesh itself has to undo). No `duration` field
+# is meaningful for `pod-kill` (it's instantaneous, not sustained), unlike the
+# NetworkChaos drill.
+#
+# github-mcp-server chosen per docs/phase6-plan.md's own example: stateless,
+# no PVC, not on the hard deny-list (gateway/postgres/redis/nodes).
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: phase6-3-3-pod-kill-github-mcp
+  namespace: mcp
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces:
+      - mcp
+    labelSelectors:
+      app: github-mcp-server
