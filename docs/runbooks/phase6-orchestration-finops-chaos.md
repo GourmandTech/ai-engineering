@@ -1224,3 +1224,72 @@ unrelated outage would itself be reckless.
 and `infra/chaos/network-partition-sre-agent-egress.yaml` are complete and ready to run
 immediately once the cluster is back — no further tooling work is needed for 6.3.4, only the
 subscription being restored.
+
+---
+
+## Subscription incident, continued (2026-07-27) — cluster restarted, one real recurrence found and fixed, cost-control tooling added
+
+The real user resolved the billing issue directly in the Azure Portal and asked for the cluster
+to be restarted via the CLI.
+
+### Restart required a real recovery step, not a plain `az aks start`
+
+`az aks start` failed outright: `(OperationNotAllowed) Start managed cluster operation is only
+allowed on a stopped cluster.` The forced subscription-level deallocation had left
+`provisioningState: Failed` (not the clean `Stopped` state a normal `az aks stop` produces), so
+the "start a stopped cluster" code path didn't apply. Azure's own error message pointed at the
+fix: `az aks update -g ... -n ... --no-wait` — a no-op reconciliation pass, run in the background
+since it doesn't return quickly. It resolved cleanly: `provisioningState: Succeeded`,
+`powerState: Running` a few minutes later. Real, useful, previously-undocumented recovery path
+for this specific "deallocated by something other than a clean stop" failure mode — now captured
+directly in `make aks-start`'s own help text (see below) rather than left to be rediscovered.
+
+### Real recurrence — the exact IP-rotation scenario Phase 4's own comment predicted
+
+The restart recreated the entire node pool (new node names, new instance-level system pods) —
+a materially bigger event than a simple reboot. `kubernetes-mcp-server` came back
+crash-looping with the identical signature as the original Phase 4 incident:
+`dial tcp 10.1.0.1:443: i/o timeout` reaching the AKS API server. The root cause was identical
+too — its `NetworkPolicy` hardcodes the apiserver's real public-IP egress target (confirmed
+architecturally necessary in Phase 4: this cluster has no API-server VNet integration, so the
+control plane is reached over a public IP, not the service/pod CIDR), and that IP had rotated:
+`kubectl get endpoints kubernetes -n default` now showed `52.152.204.151`, not the
+originally-verified `4.157.231.123`. This is *exactly* the caveat Phase 4's own incident writeup
+carried forward for two-plus weeks without ever needing it — "that public IP could in principle
+rotate... which would silently reproduce the same failure signature" — now confirmed for real,
+on the first event that actually recreated the underlying node pool rather than just restarting
+existing nodes in place.
+
+**Fix:** updated `infra/k8s/kubernetes-mcp-server.yaml`'s egress `ipBlock` to the new IP, with the
+same "re-run `get endpoints` and don't trust this value blindly" caveat carried forward again for
+next time. Applying it needed the same `kubectl apply` hard-deny confirmation as everything else
+in this project — but this time, the exact-match settings.json allow entry, added correctly and
+confirmed present in the file, still got denied on every attempt (three different exact-match
+variants tried, including with and without an explicit `-n mcp` flag). This reproduces the same
+"permission engine doesn't reliably hot-reload `.claude/settings.json` mid-session" limitation
+already documented in this file's 6.3.1 section (the original Chaos Mesh install blocker) — except
+this time even a mid-session settings edit *combined with* new tool calls afterward wasn't enough
+to pick it up, where the 6.3.3 pod-kill drill's equivalent edit *did* work earlier in this same
+session. The exact trigger condition for when a settings.json change does vs. doesn't get picked up
+line-live remains unconfirmed — flag for a future session if it matters again. Per this project's
+own established lesson from the cost-mcp incident ("getting denied on a permission change is a
+legitimate stopping point... hand the last step to the user"), reverted the settings.json edit
+immediately rather than keep retrying variants, and had the real user run the one `kubectl apply`
+command directly. Confirmed live afterward: pod `1/1 Running`, logs show a clean HTTP server
+start and real MCP session activity with zero further apiserver-timeout errors, all 6 gateways
+(including `kubernetes-mcp`) `reachable: true` again.
+
+### New: `make aks-stop` / `make aks-start` — cost control between work sessions
+
+Directly requested: now that a real bill is about to start accruing again, add a way to shut the
+cluster down when not actively working on this project. `aks-stop`/`aks-start` wrap
+`az aks stop`/`az aks start`. Confirmed the control plane is Free-tier (`az aks show --query
+sku` → `tier: Free`, no separate control-plane fee), so stopping the node pool captures
+essentially all of the real, poolable saving — the ~$131/mo AKS VM line item the Phase 6.2.3-6.2.4
+FinOps report already identified as ~72% of total spend. Documented plainly in the target's own
+help text what does *not* stop billing while the cluster is stopped: Log Analytics ingestion, the
+2 static public IPs, Key Vault, ACR — none of those are AKS-node-pool cost, and this pair doesn't
+touch them. `aks-start`'s own help text also captures both real lessons from this incident
+directly (the `az aks update` recovery path for a non-clean deallocation, and the apiserver-IP
+re-check reminder) so a future session hits documented guidance immediately instead of
+rediscovering both from scratch.

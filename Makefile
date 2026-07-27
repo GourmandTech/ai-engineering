@@ -1,7 +1,7 @@
 .PHONY: help up down logs test \
         chart-fetch chart-verify \
         minikube-start helm-install helm-upgrade helm-status helm-diff helm-diff-aks helm-uninstall \
-        az-login bicep-validate bicep-deploy aks-creds helm-aks \
+        az-login bicep-validate bicep-deploy aks-creds helm-aks aks-stop aks-start \
         mcp-register mcp-status port-forward \
         sre-mcp-build sre-mcp-deploy github-mcp-build github-mcp-deploy \
         azure-devops-mcp-build azure-devops-mcp-deploy \
@@ -280,6 +280,35 @@ aks-creds: ## Pull AKS kubeconfig, install kubelogin if missing, and set context
 	@# need actual cluster-admin (e.g. deploy.yml) already have a role that
 	@# passes this.
 	@kubectl get nodes || echo "(kubectl get nodes forbidden for this identity — not fatal, see comment above)"
+
+# Cost-control pair, added 2026-07-27 after a real subscription billing lock
+# deallocated this cluster outright (see docs/runbooks/phase6-orchestration-finops-chaos.md
+# Sec 6.3.3-6.3.4's incident writeup). The cluster's own control plane is
+# Free-tier (confirmed: `az aks show --query sku` -> tier=Free), so stopping
+# the node pool captures essentially all the real savings — the ~$131/mo AKS
+# VM line item that the Phase 6.2.3-6.2.4 FinOps report identified as ~72%
+# of total spend. Log Analytics, the 2 static public IPs, Key Vault, and ACR
+# all keep billing regardless of AKS stop/start state — this pair only
+# targets the one dominant, genuinely poolable cost.
+aks-stop: ## Stop the AKS cluster (deallocates node pool VMs — no compute billing while stopped) between work sessions
+	az aks stop -g $(RESOURCE_GROUP) -n $(AKS_CLUSTER)
+	@echo "✓ AKS cluster stopped — node pool VMs deallocated, no compute billing while stopped."
+	@echo "  Still billing as normal while stopped: Log Analytics ingestion, the 2 static public"
+	@echo "  IPs, Key Vault, ACR — none of those are AKS-node-pool cost. Resume with: make aks-start"
+
+aks-start: ## Start a previously-stopped AKS cluster back up (requires: make aks-stop, not an external/unexpected deallocation)
+	az aks start -g $(RESOURCE_GROUP) -n $(AKS_CLUSTER)
+	@echo "✓ AKS cluster starting — allow a few minutes for nodes and pods to become Ready."
+	@echo "  Verify with: make aks-creds && kubectl get pods -A"
+	@echo "  If this command errors with 'Start managed cluster operation is only allowed on a"
+	@echo "  stopped cluster' (provisioningState=Failed rather than a clean Stopped — this is what"
+	@echo "  happened during the 2026-07-27 subscription lock, not a normal make aks-stop cycle),"
+	@echo "  that means the cluster was deallocated by something other than a clean 'make aks-stop'"
+	@echo "  (e.g. a subscription-level billing lock). Reconcile it back to a real state first:"
+	@echo "    az aks update -g $(RESOURCE_GROUP) -n $(AKS_CLUSTER) --no-wait"
+	@echo "  Also re-check infra/k8s/kubernetes-mcp-server.yaml's hardcoded apiserver public IP"
+	@echo "  after any such recovery — a full node-pool recreation can rotate it (confirmed to"
+	@echo "  happen once already; see that manifest's own comment for the live-check command)."
 
 
 aks-status: ## Show AKS Helm release status and pod health

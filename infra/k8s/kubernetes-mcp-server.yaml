@@ -254,13 +254,18 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # Kubernetes API server — the REAL backend IP, verified 2026-07-03 via
-    # `kubectl get endpoints kubernetes -n default -o wide` (4.157.231.123),
-    # not the 10.1.0.0/16 service CIDR the first version of this rule used.
-    # See this NetworkPolicy's header comment for the full incident writeup.
+    # Kubernetes API server — the REAL backend IP. Originally verified
+    # 2026-07-03 (4.157.231.123). Rotated to 52.152.204.151 as of 2026-07-27,
+    # confirmed via `kubectl get endpoints kubernetes -n default` after the
+    # cluster came back from a full stop/recreate cycle (subscription
+    # billing lock -> az aks update reconciliation) — exactly the rotation
+    # scenario this comment originally warned about. Re-run that same
+    # `get endpoints` check first if this ever crash-loops again with the
+    # same `dial tcp 10.1.0.1:443: i/o timeout` signature — don't assume the
+    # IP below is still current without checking.
     - to:
         - ipBlock:
-            cidr: 4.157.231.123/32
+            cidr: 52.152.204.151/32
       ports:
         - protocol: TCP
           port: 443
