@@ -75,7 +75,7 @@ Learning Phases summary table but not this section). A `git pull` mid-session al
 more merged PRs not yet reflected here (#6, #8). Added a full Phase 6 section below, matching the
 existing incident-log density of Phase 4/5, sourced from `docs/runbooks/phase6-orchestration-finops-chaos.md`.
 
-## Current State (updated 2026-07-22)
+## Current State (updated 2026-07-27)
 
 ### Phase 4 — COMPLETE ✅ (Federated MCP)
 Full runbook: `docs/runbooks/phase4-federated-mcp.md`
@@ -329,7 +329,7 @@ role should this need" in the abstract beforehand.
 
 ---
 
-### Phase 6 — IN PROGRESS 🔄 (Multi-agent orchestration, FinOps, chaos engineering)
+### Phase 6 — COMPLETE ✅ (Multi-agent orchestration, FinOps, chaos engineering)
 Plan: `docs/phase6-plan.md` (cross-team design decisions) + `docs/phase6-execution-plan.md`
 (execution waves). Full runbook: `docs/runbooks/phase6-orchestration-finops-chaos.md`.
 Three independent pillars — 6.1 (A2A orchestration), 6.2 (FinOps), 6.3 (chaos engineering) — each
@@ -477,14 +477,87 @@ narrowly-scoped allow for the isolated `chaos-mesh` release specifically. Fault-
 (6.3.3+) remain a separate, explicitly human-gated future wave — nothing in 6.3.1/6.3.2 created or
 ran any fault CR.
 
-**Not yet started:** 6.1.3 (multi-hop delegation — sre-agent delegating through dev-agent),
-6.1.4, 6.2.3-6.2.4 (finops-agent as a recommend-only A2A specialist), 6.3.3+ (actual
-fault-injection drills — pod-kill, then NetworkPolicy fault injection — each requiring the human
-gate from the Phase 5.3 `production` Environment pattern).
-
 **2026-07-22 — full `.claude/agents/` subagent roster added**, covering all three pillars above
 plus the project's existing Bicep/k8s/IAM/CI/CD surface — see the Tooling Evaluations section
 near the top of this file for the full roster and rationale.
+
+**6.1.3 — Multi-hop delegation (sre-agent → dev-agent): ✅ COMPLETE.** sre-agent's own system
+prompt was extended to know about `a2a-dev-agent`, proving a specialist can itself delegate
+further rather than delegation only ever originating at the coordinator. `agents/sre-agent/agent.py`
+and `agents/dev-agent/agent.py` both gained an `AgentRunResult` dataclass (`text`, `cost_usd`) as
+the shared building block for the next step's per-hop cost tracking.
+
+**6.1.4 — Delegation-chain observability: ✅ COMPLETE.** Self-hosted Grafana dashboard
+(`infra/grafana/a2a-agent-dashboard.json`, `scripts/grafana-provision-a2a-dashboard.sh`,
+`infra/helm/values.monitoring.yaml`) visualizing per-hop cost and latency across the
+coordinator → specialist → sub-specialist chain, using the Infinity datasource plugin against the
+gateway's own JSON metrics endpoint (`root_selector` + `parser: "backend"` required — silently
+returns empty without the latter; Grafana's native `filterByValue` transform used instead of the
+plugin's own non-functional `filterExpression`). Chose self-hosted over Grafana Cloud specifically
+for cost reasons — free-tier Grafana Cloud is fine for a hobby project but this is deliberately
+modeling an Enterprise cost posture, where a recurring per-seat/per-metric SaaS bill for
+observability doesn't fit a project whose other pillar (6.2) is FinOps-conscious by design.
+
+**6.2.3-6.2.4 — FinOps rightsizing agent: ✅ COMPLETE.** `agents/finops-agent/agent.py` — a
+recommend-only A2A specialist (`tools=[]`, no write-capable federated tools; the node-count/
+node-pool/autoscaler-min-2 ban is hardcoded directly into its system prompt, not just left as a
+convention elsewhere) that correlates `cost-mcp-server`'s Cost Management data against actual
+utilization to produce `docs/reports/finops-rightsizing-2026-07-22.md`: recommends
+`Standard_D2s_v7` → `Standard_B2ms` (burstable SKU, ~$50/mo saving), a Spot pool for non-critical
+pods, and explicit no-action calls on Log Analytics/Key Vault. One real bug fixed along the way:
+`mcp-create-server`'s `jq` filter had a `.gatewaySlug` lookup evaluated after `.` had already
+shifted inside a `index(...)` sub-expression — broken since the original Phase 4 Step 5 commit,
+never re-exercised until this wave; fixed by binding to a `$gs` jq variable first.
+
+**6.3.3-6.3.4 — Gated fault-injection drills: ✅ COMPLETE, both PASS.** Full writeup:
+`docs/runbooks/phase6-orchestration-finops-chaos.md`, "6.3.3-6.3.4 — Gated fault-injection drills".
+Shared mechanics in `scripts/chaos_drill_lib.py` (hard allow/deny pod target lists checked in code,
+a dead-man's-switch that deletes the fault CR if gateway `/health` stays unhealthy >30s, an
+"agent evaluation harness" reusing sre-agent's own `/run` endpoint). Both drills required a fresh,
+narrow, exact-match `.claude/settings.json` allow for the one specific `kubectl apply`/`delete`
+needed, added immediately before and reverted immediately after each run — a hard `deny` can never
+be satisfied by in-conversation approval alone, only by the real user directly relaxing it for that
+one command.
+- **6.3.3 (pod-kill, `github-mcp-server`): PASS.** Recovered in 15.4s; all 7 other watched apps and
+  the gateway stayed healthy throughout; agent-evaluation harness independently confirmed the kill
+  was real (pod name suffix changed, 0 restarts on the fresh replica).
+- **6.3.4 (network-partition, sre-agent → gateway egress): PASS**, but not on the first attempt —
+  blocked for an entire prior session by a real, unrelated production incident (see "Subscription
+  incident" below) that the drill's own pre-flight health check caught before any fault was
+  injected. Once resolved: the during-partition call failed cleanly at 21.9s (HTTP 500), just past
+  sre-agent's own 20s internal MCP-connect timeout — proving the Phase 5.2 fix
+  (`_wait_for_mcp_connection`'s `CONNECT_TIMEOUT_S=20`) still holds under a real network partition,
+  which was the actual point of the drill, not just eventual recovery. All other apps and the
+  gateway stayed healthy; the `NetworkChaos` CR was cleanly deleted post-drill.
+
+**Real incident — subscription billing lock, 2026-07-27.** `https://contextforge.gourmandtech.com/health`
+went to `Connection refused` mid-session, unrelated to any change in this project. `az aks show`
+showed `provisioningState: Failed`, `powerState.code: Deallocated`, and `az aks get-credentials`
+(a read action, despite the verb) failed with `ReadOnlyDisabledSubscription` — a billing/spending
+event on the sandbox subscription had force-deallocated the cluster, not deleted anything (every
+RG resource was still present). Resolved by the user directly in the Azure Portal, then recovered
+via CLI: `az aks start` failed (`OperationNotAllowed` — the cluster was in `Failed`, not a clean
+`Stopped` state), fixed with `az aks update --no-wait` (a no-op reconciliation), which resolved
+`provisioningState: Succeeded` a few minutes later. The node-pool recreation this caused then
+reproduced, for real, the exact IP-rotation scenario Phase 4's own incident writeup had predicted
+(but never needed) for two-plus weeks: `kubernetes-mcp-server` crash-looped again with the
+identical `dial tcp 10.1.0.1:443: i/o timeout` signature, because the AKS apiserver's public
+egress IP had rotated (`4.157.231.123` → `52.152.204.151`). Fixed in
+`infra/k8s/kubernetes-mcp-server.yaml`'s NetworkPolicy — applied by the user directly after three
+different exact-match settings.json allow variants were all denied despite being saved correctly,
+reproducing the same "permission engine doesn't reliably hot-reload `.claude/settings.json`
+mid-session" limitation as the original 6.3.1 Chaos Mesh blocker (the exact trigger condition
+remains unconfirmed).
+
+**New: `make aks-stop` / `make aks-start`** — directly requested once this incident made "a real
+bill is about to start accruing again" concrete. Confirmed the AKS control plane is Free-tier (no
+separate control-plane fee), so stopping the node pool captures ~72% of total spend (the AKS VM
+line item the 6.2.3-6.2.4 FinOps report already identified). `aks-start`'s help text documents
+both the `az aks update --no-wait` recovery path and the apiserver-IP re-check reminder, so a
+future session hits this guidance directly instead of rediscovering it.
+
+**Phase 6 is now fully complete: 6.1.1-6.1.4, 6.2.1-6.2.4, 6.3.1-6.3.4 all done, all three pillars
+(A2A orchestration, FinOps, chaos engineering) closed out.**
 
 ---
 
@@ -647,7 +720,7 @@ Deploying IBM ContextForge — an open-source AI Gateway that federates MCP serv
 | 3 | AKS — deploy to Azure with Bicep IaC, production-grade config | ✅ |
 | 4 | Federated MCP — register multiple MCP servers, RBAC + OAuth | ✅ |
 | 5 | Agent automation — A2A protocol, multi-agent orchestration, CI/CD | ✅ (5.1-5.3 done, 5.4 stretch pending) |
-| 6 | Multi-agent orchestration, FinOps, chaos engineering | 🔄 (6.1.1-6.1.2, 6.2.1-6.2.2, 6.3.1-6.3.2 done) |
+| 6 | Multi-agent orchestration, FinOps, chaos engineering | ✅ |
 
 ---
 
