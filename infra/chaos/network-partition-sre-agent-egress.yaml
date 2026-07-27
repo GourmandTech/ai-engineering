@@ -1,0 +1,40 @@
+# Phase 6.3.4 — NetworkPolicy/egress fault-injection drill.
+#
+# Deliberately re-exercises the exact failure surface that has already broken
+# TWICE by accident in this project (Phase 4: kubernetes-mcp-server's apiserver
+# egress; Phase 5.2: sre-agent's own port-4444 egress to the gateway, which
+# silently hung at SSE `status: pending` forever until the fix in
+# _wait_for_mcp_connection added an explicit CONNECT_TIMEOUT_S=20). This drill
+# targets sre-agent -> gateway egress specifically to prove that fix actually
+# surfaces a clean, bounded TimeoutError now, instead of hanging again.
+#
+# action: partition (full bidirectional block, direction: to) rather than
+# `delay`, since a full block is the more faithful reproduction of the
+# original accidental-NetworkPolicy-gap symptom (nothing got through at all).
+#
+# duration: 30s — comfortably inside the project's <=60s bound, and long
+# enough to clear sre-agent's own 20s connect timeout at least once.
+# Chaos Mesh auto-reverts the network rule when duration elapses; the CR
+# object itself is deleted afterward by the drill script, not left around.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: phase6-3-4-network-partition-sre-agent
+  namespace: mcp
+spec:
+  action: partition
+  mode: one
+  selector:
+    namespaces:
+      - mcp
+    labelSelectors:
+      app: sre-agent
+  direction: to
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - mcp
+      labelSelectors:
+        app: mcp-stack-mcpgateway
+  duration: "30s"
