@@ -101,7 +101,7 @@ Condensed status: `CLAUDE.md` Phase 5 section. Original plan: `docs/phase5-plan.
 
 ---
 
-## Phase 6: Multi-Agent Orchestration, FinOps, Chaos Engineering 🔄 IN PROGRESS (6.1.1-6.1.2, 6.2.1-6.2.2, 6.3.1-6.3.2 done)
+## Phase 6: Multi-Agent Orchestration, FinOps, Chaos Engineering ✅ COMPLETE
 **Goal:** extend A2A delegation to real multi-specialist routing, add AI-assisted Azure cost
 analysis, and stand up chaos-engineering readiness on the production cluster — three parallel
 pillars designed together (`docs/phase6-plan.md`) and executed in waves (`docs/phase6-execution-plan.md`).
@@ -129,13 +129,25 @@ Tasks:
   CPU-headroom go/no-go check before and after, zero fault CRDs ever created; a health-fingerprint
   drill (`agents/sre-agent/baseline_drill.py`) proves the evaluation harness works before any future
   fault injection is allowed.
-- [ ] 6.1.3 — multi-hop delegation (specialist → specialist) — not started.
-- [ ] 6.1.4 — delegation-chain observability (A2A metrics, per-hop token cost) — not started.
-- [ ] 6.2.3-6.2.4 — FinOps rightsizing agent, recommend-only — not started.
-- [ ] 6.3.3+ — gated fault-injection drills (pod-kill, NetworkPolicy) — deliberately deferred, requires
-  human approval on every run per the plan's own non-negotiable guardrails.
-- [ ] Run `/resume-update`
+- [x] 6.1.3 — multi-hop delegation (specialist → specialist) — sre-agent's own system prompt
+  extended to know about `a2a-dev-agent`, proving delegation isn't only ever coordinator-initiated.
+- [x] 6.1.4 — delegation-chain observability — self-hosted Grafana dashboard
+  (`infra/grafana/a2a-agent-dashboard.json`) visualizing per-hop cost/latency across the full
+  coordinator → specialist → sub-specialist chain; chose self-hosted over free-tier Grafana Cloud
+  specifically to model a realistic Enterprise cost posture rather than a recurring SaaS bill.
+- [x] 6.2.3-6.2.4 — FinOps rightsizing agent, recommend-only — `agents/finops-agent/` (hardcoded
+  node-count/autoscaler-min-2 ban, `tools=[]`) produced a live, real rightsizing report
+  (`docs/reports/finops-rightsizing-2026-07-22.md`): burstable-SKU switch, Spot pool for
+  non-critical pods, ~$50/mo saving.
+- [x] 6.3.3+ — gated fault-injection drills — both run live, both **PASS**: pod-kill on
+  `github-mcp-server` (15.4s recovery) and a network-partition on sre-agent's own gateway egress
+  (clean 21.9s failure, confirming the Phase 5.2 20s-timeout fix holds under a real partition).
+  Each required a fresh, narrow, exact-match `.claude/settings.json` allow added immediately before
+  and reverted immediately after — a hard `deny` can't be satisfied by in-conversation approval
+  alone, only by the real user relaxing it for that one run.
+- [x] Run `/resume-update`
 
 Full write-up (every real bug/finding, including two real AI-agent trust incidents caught and
-corrected during multi-agent delegation): `docs/runbooks/phase6-orchestration-finops-chaos.md`.
+corrected during multi-agent delegation, plus a real subscription-billing-lock outage and recovery):
+`docs/runbooks/phase6-orchestration-finops-chaos.md`.
 Design + execution plan: `docs/phase6-plan.md`, `docs/phase6-execution-plan.md`.

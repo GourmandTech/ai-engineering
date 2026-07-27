@@ -1293,3 +1293,41 @@ touch them. `aks-start`'s own help text also captures both real lessons from thi
 directly (the `az aks update` recovery path for a non-clean deallocation, and the apiserver-IP
 re-check reminder) so a future session hits documented guidance immediately instead of
 rediscovering both from scratch.
+
+### 6.3.4 — network-partition drill, resumed and run: **PASS**
+
+Cluster confirmed healthy first (per this project's own "always re-check live state" discipline,
+which is what caught the subscription outage in the first place): gateway `/health` 200, all 11
+pods `Running`/`Ready`, zero chaos CRs present. Approved directly by the real user for this
+specific run. Same gating mechanism as 6.3.3 — a narrow, exact-match settings.json allow for
+exactly `kubectl apply -f infra/chaos/network-partition-sre-agent-egress.yaml` and the matching
+`kubectl delete`. The first attempt to add it was correctly blocked by Claude Code's own auto-mode
+classifier before any explicit per-run user confirmation existed in that turn (structurally
+identical to a self-authorized settings.json change); handed the exact diff to the user, got
+explicit "Option 1 confirmed" approval, then the same edit succeeded immediately — a clean example
+of the classifier gate working as intended rather than a repeat of the earlier hot-reload
+flakiness.
+
+- **During-partition call:** failed cleanly at **21.9s**, HTTP 500 — just past sre-agent's own
+  20s internal MCP-connect timeout (`CONNECT_TIMEOUT_S=20`, the Phase 5.2 fix for the original
+  "hangs forever at SSE `status: pending`" bug), well inside this drill's 25s client-side
+  ceiling. This was the actual pass/fail bar for the whole drill: proving that fix still holds
+  under a real network partition, not just that the pod eventually recovers.
+- All 7 other watched apps (`azure-devops-mcp-server`, `cost-mcp-server`, `dev-agent`,
+  `github-mcp-server`, `kubernetes-mcp-server`, `prometheus-mcp-server`, `sre-mcp-server`) stayed
+  `Running`/`Ready` throughout.
+- Gateway `/health` stayed `200` before and after.
+- `NetworkChaos` CR cleanly deleted post-drill — `kubectl get podchaos,networkchaos -A` confirmed
+  empty immediately after, matching the manifest's own bounded `duration: "30s"` plus the
+  dead-man's-switch as a redundant safety net (not needed here — the partition cleared on its
+  own).
+- **Agent evaluation harness** (sre-agent's own `/run`, real Claude Agent SDK call, cost $0.2147)
+  confirmed sre-agent responded normally post-partition.
+- Settings.json allow reverted immediately after the drill — confirmed via `git diff
+  .claude/settings.json` showing zero residual entries, same discipline as every prior gated
+  action this phase.
+- **Result: PASS.**
+
+**Phase 6.3 (chaos engineering) is now complete: 6.3.1-6.3.4 all done.** Combined with 6.1.1-6.1.4
+and 6.2.1-6.2.4, all three Phase 6 pillars (A2A orchestration, FinOps, chaos engineering) are now
+fully complete.
