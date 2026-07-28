@@ -1,0 +1,82 @@
+<svg width="1200" height="600" viewBox="0 0 1200 600" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <rect width="1200" height="600" fill="#f9f9f7"/>
+
+  <!-- Title -->
+  <text x="55" y="45" font-size="25" font-weight="700" fill="#0b0b0b">Two Identities, Two Blast Radii</text>
+  <text x="55" y="70" font-size="14.5" fill="#52514e">OIDC-federated GitHub Actions — no stored cloud secrets, ever</text>
+
+  <!-- Row A: PR / CI / Merge -->
+  <rect x="35" y="105" width="190" height="65" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="2"/>
+  <text x="130" y="143" font-size="14" fill="#0b0b0b" text-anchor="middle">Pull Request opened</text>
+
+  <rect x="270" y="90" width="310" height="95" rx="10" fill="#fcfcfb" stroke="#2a78d6" stroke-width="2.5"/>
+  <text x="425" y="118" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="middle">CI — ci.yml</text>
+  <text x="425" y="138" font-size="11.5" fill="#52514e" text-anchor="middle">lint + helm-diff — runs on every PR, unguarded</text>
+  <text x="425" y="156" font-size="11.5" fill="#2a78d6" font-weight="600" text-anchor="middle">identity: ci-readonly (read-only OIDC)</text>
+
+  <rect x="630" y="105" width="190" height="65" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="2"/>
+  <text x="725" y="143" font-size="14" fill="#0b0b0b" text-anchor="middle">Merge to main</text>
+
+  <g stroke="#0b0b0b" stroke-width="2" fill="none">
+    <line x1="225" y1="138" x2="265" y2="138"/>
+    <polygon points="265,138 254,133 254,143" fill="#0b0b0b"/>
+    <line x1="580" y1="138" x2="625" y2="138"/>
+    <polygon points="625,138 614,133 614,143" fill="#0b0b0b"/>
+    <line x1="725" y1="170" x2="725" y2="205"/>
+    <polygon points="725,205 719,195 731,195" fill="#0b0b0b"/>
+  </g>
+
+  <!-- Row B: Gate -->
+  <rect x="565" y="207" width="320" height="80" rx="10" fill="#eda100"/>
+  <text x="725" y="238" font-size="15" font-weight="700" fill="#ffffff" text-anchor="middle">Required-reviewer gate</text>
+  <text x="725" y="258" font-size="12" fill="#fff6e0" text-anchor="middle">GitHub Environment: production</text>
+
+  <line x1="725" y1="287" x2="725" y2="320" stroke="#0b0b0b" stroke-width="2"/>
+  <polygon points="725,320 719,310 731,310" fill="#0b0b0b"/>
+
+  <text x="725" y="345" font-size="13" font-weight="700" fill="#0b0b0b" text-anchor="middle">Deploy — deploy.yml</text>
+  <text x="725" y="362" font-size="11.5" fill="#2a78d6" font-weight="600" text-anchor="middle">identity: cicd (privileged, environment-scoped OIDC — CI never touches it)</text>
+
+  <!-- Row C: deploy chain -->
+  <g>
+    <rect x="35" y="480" width="205" height="75" rx="10" fill="#fcfcfb" stroke="#898781" stroke-width="2"/>
+    <text x="137" y="513" font-size="13.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">bicep-validate</text>
+    <text x="137" y="531" font-size="10.5" fill="#52514e" text-anchor="middle">what-if discipline</text>
+
+    <rect x="265" y="480" width="205" height="75" rx="10" fill="#fcfcfb" stroke="#898781" stroke-width="2"/>
+    <text x="367" y="513" font-size="13.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">bicep-deploy</text>
+    <text x="367" y="531" font-size="10.5" fill="#52514e" text-anchor="middle">infra provisioning</text>
+
+    <rect x="495" y="480" width="205" height="75" rx="10" fill="#fcfcfb" stroke="#898781" stroke-width="2"/>
+    <text x="597" y="513" font-size="13.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">aks-creds</text>
+    <text x="597" y="531" font-size="10.5" fill="#52514e" text-anchor="middle">cluster credentials</text>
+
+    <rect x="725" y="480" width="205" height="75" rx="10" fill="#fcfcfb" stroke="#898781" stroke-width="2"/>
+    <text x="827" y="507" font-size="13.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">helm-aks-</text>
+    <text x="827" y="524" font-size="13.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">secrets</text>
+    <text x="827" y="542" font-size="10.5" fill="#52514e" text-anchor="middle">app deploy</text>
+
+    <rect x="955" y="480" width="210" height="75" rx="10" fill="#0ca30c"/>
+    <text x="1060" y="510" font-size="13.5" font-weight="700" fill="#ffffff" text-anchor="middle">Live</text>
+    <text x="1060" y="528" font-size="10" fill="#d7f5d7" text-anchor="middle">contextforge.</text>
+    <text x="1060" y="542" font-size="10" fill="#d7f5d7" text-anchor="middle">gourmandtech.com</text>
+  </g>
+
+  <path d="M 725 395 L 725 440 L 137 440 L 137 476" stroke="#0b0b0b" stroke-width="2" fill="none"/>
+  <polygon points="137,476 131,466 143,466" fill="#0b0b0b"/>
+
+  <g stroke="#c3c2b7" stroke-width="2" fill="none">
+    <line x1="240" y1="517" x2="260" y2="517"/>
+    <polygon points="260,517 252,512 252,522" fill="#c3c2b7"/>
+    <line x1="470" y1="517" x2="490" y2="517"/>
+    <polygon points="490,517 482,512 482,522" fill="#c3c2b7"/>
+    <line x1="700" y1="517" x2="720" y2="517"/>
+    <polygon points="720,517 712,512 712,522" fill="#c3c2b7"/>
+    <line x1="930" y1="517" x2="950" y2="517"/>
+    <polygon points="950,517 942,512 942,522" fill="#c3c2b7"/>
+  </g>
+
+  <!-- Footer -->
+  <text x="55" y="585" font-size="13.5" fill="#898781">github.com/GourmandTech/ai-engineering</text>
+  <text x="1145" y="585" font-size="13.5" fill="#898781" text-anchor="end">.github/workflows/ci.yml + deploy.yml</text>
+</svg>

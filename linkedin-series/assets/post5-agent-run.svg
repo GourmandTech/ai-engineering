@@ -1,0 +1,52 @@
+<svg width="1200" height="770" viewBox="0 0 1200 770" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <rect width="1200" height="770" fill="#f9f9f7"/>
+
+  <!-- Title -->
+  <text x="55" y="45" font-size="22" font-weight="700" fill="#0b0b0b">A Real sre-agent Run — Captured Live</text>
+  <text x="55" y="68" font-size="13.5" fill="#52514e">Run 2026-07-28, scoped non-admin token — same default task as Phase 5.1</text>
+
+  <!-- Terminal window -->
+  <rect x="55" y="90" width="1090" height="620" rx="10" fill="#1a1a19"/>
+  <circle cx="80" cy="112" r="6" fill="#e34948"/>
+  <circle cx="100" cy="112" r="6" fill="#eda100"/>
+  <circle cx="120" cy="112" r="6" fill="#1baf7a"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c3c2b7">
+    <text x="80" y="148" fill="#ffffff">$ python3 agent.py</text>
+    <text x="98" y="166" fill="#898781"># task: check AKS node-pool health + summarize last-24h Prometheus alerts</text>
+
+    <text x="80" y="198" fill="#eda100">[tool call] kubernetes-mcp-resources-list({'kind': 'Node'})</text>
+    <text x="80" y="216" fill="#eda100">[tool call] kubernetes-mcp-pods-list({'fieldSelector': 'status.phase=Pending'})</text>
+    <text x="80" y="234" fill="#eda100">[tool call] prometheus-mcp-execute-query({'query': 'ALERTS{alertstate="firing"}...'})</text>
+    <text x="80" y="252" fill="#eda100">[tool call] kubernetes-mcp-nodes-top({})</text>
+    <text x="80" y="270" fill="#eda100">[tool call] kubernetes-mcp-pods-list({'fieldSelector': 'status.phase=Failed'})</text>
+    <text x="80" y="288" fill="#eda100">[tool call] prometheus-mcp-execute-query({'query': 'kube_node_status_condition...'})</text>
+    <text x="80" y="306" fill="#eda100">[tool call] prometheus-mcp-execute-query({'query': 'count(ALERTS)'})</text>
+
+    <text x="80" y="336" fill="#1baf7a" font-weight="700">--- success, cost=$0.5726 ---</text>
+
+    <text x="80" y="368" fill="#ffffff" font-weight="700"># Combined Health Report — AKS + Prometheus (last 24h)</text>
+
+    <text x="80" y="396" fill="#ffffff" font-weight="700">Cluster nodes: <tspan fill="#1baf7a">Healthy</tspan></text>
+    <text x="98" y="416" fill="#c3c2b7">3 nodes in the system pool, all Ready=true, 0 unschedulable</text>
+    <text x="98" y="434" fill="#c3c2b7">(within autoscaler's min=2/max=10 range)</text>
+
+    <text x="80" y="464" fill="#ffffff" font-weight="700">Pods: <tspan fill="#1baf7a">Clean</tspan></text>
+    <text x="98" y="484" fill="#c3c2b7">0 Pending, 0 Failed across all namespaces</text>
+
+    <text x="80" y="514" fill="#ffffff" font-weight="700">Prometheus alerts (last 24h): <tspan fill="#1baf7a">No real alerts</tspan></text>
+    <text x="98" y="534" fill="#c3c2b7">Only 2 informational alerts firing (severity: none):</text>
+    <text x="98" y="552" fill="#c3c2b7">Watchdog (proves the alert pipeline is alive) + InfoInhibitor (standard)</text>
+    <text x="98" y="570" fill="#c3c2b7">No warning- or critical-severity alerts in the window</text>
+
+    <text x="80" y="602" fill="#3987e5">Note: direct node listing is denied for this token (cluster-scoped Node</text>
+    <text x="80" y="620" fill="#3987e5">access is intentionally excluded from the SRE service account's Azure</text>
+    <text x="80" y="638" fill="#3987e5">RBAC) — node status above came from Prometheus instead. Expected,</text>
+    <text x="80" y="656" fill="#3987e5">not a fault — this is the Phase 4 RBAC boundary holding, observed</text>
+    <text x="80" y="674" fill="#3987e5">from inside a real agent run rather than tested directly.</text>
+  </g>
+
+  <!-- Footer -->
+  <text x="55" y="742" font-size="13.5" fill="#898781">github.com/GourmandTech/ai-engineering</text>
+  <text x="1145" y="742" font-size="13.5" fill="#898781" text-anchor="end">agents/sre-agent/agent.py — team-scoped token, tools=[] (no local shell/filesystem access)</text>
+</svg>

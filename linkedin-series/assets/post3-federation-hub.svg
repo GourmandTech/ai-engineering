@@ -1,0 +1,65 @@
+<svg width="1200" height="710" viewBox="0 0 1200 710" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <rect width="1200" height="710" fill="#f9f9f7"/>
+
+  <!-- Title -->
+  <text x="55" y="50" font-size="28" font-weight="700" fill="#0b0b0b">Federated MCP — One Gateway, Five Systems</text>
+  <text x="55" y="76" font-size="15.5" fill="#52514e">IBM ContextForge on AKS — a universal adapter between AI agents and existing infrastructure</text>
+
+  <!-- Agent box -->
+  <rect x="490" y="112" width="220" height="70" rx="10" fill="#fcfcfb" stroke="#0b0b0b" stroke-width="2"/>
+  <text x="600" y="141" font-size="16" font-weight="700" fill="#0b0b0b" text-anchor="middle">AI Agent / Client</text>
+  <text x="600" y="161" font-size="12" fill="#52514e" text-anchor="middle">Claude Agent SDK, LangGraph, etc.</text>
+  <line x1="600" y1="182" x2="600" y2="275" stroke="#0b0b0b" stroke-width="2"/>
+  <polygon points="600,275 594,263 606,263" fill="#0b0b0b"/>
+
+  <!-- Hub -->
+  <circle cx="600" cy="370" r="95" fill="#2a78d6"/>
+  <text x="600" y="358" font-size="19" font-weight="700" fill="#ffffff" text-anchor="middle">ContextForge</text>
+  <text x="600" y="380" font-size="19" font-weight="700" fill="#ffffff" text-anchor="middle">Gateway</text>
+  <text x="600" y="404" font-size="11.5" fill="#cde2fb" text-anchor="middle">1 authenticated endpoint</text>
+  <text x="600" y="420" font-size="11.5" fill="#cde2fb" text-anchor="middle">86 tools federated</text>
+
+  <!-- Spokes (from hub bottom, fanning to each server) -->
+  <g stroke="#c3c2b7" stroke-width="2" fill="none">
+    <line x1="600" y1="465" x2="140" y2="558"/>
+    <line x1="600" y1="465" x2="370" y2="558"/>
+    <line x1="600" y1="465" x2="600" y2="558"/>
+    <line x1="600" y1="465" x2="830" y2="558"/>
+    <line x1="600" y1="465" x2="1060" y2="558"/>
+  </g>
+
+  <!-- Server boxes -->
+  <!-- SRE Toolbox -->
+  <rect x="40" y="560" width="200" height="90" rx="10" fill="#fcfcfb" stroke="#898781" stroke-width="2"/>
+  <text x="140" y="596" font-size="15.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">SRE Toolbox</text>
+  <text x="140" y="617" font-size="11.5" fill="#52514e" text-anchor="middle">custom Python (FastMCP)</text>
+  <text x="140" y="634" font-size="11.5" fill="#52514e" text-anchor="middle">native SSE</text>
+
+  <!-- GitHub -->
+  <rect x="270" y="560" width="200" height="90" rx="10" fill="#fcfcfb" stroke="#898781" stroke-width="2"/>
+  <text x="370" y="596" font-size="15.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">GitHub</text>
+  <text x="370" y="617" font-size="11.5" fill="#52514e" text-anchor="middle">official, self-hosted in-cluster</text>
+  <text x="370" y="634" font-size="11.5" fill="#52514e" text-anchor="middle">stdio → SSE wrapper</text>
+
+  <!-- Azure DevOps -->
+  <rect x="500" y="560" width="200" height="90" rx="10" fill="#fcfcfb" stroke="#898781" stroke-width="2"/>
+  <text x="600" y="596" font-size="15.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">Azure DevOps</text>
+  <text x="600" y="617" font-size="11.5" fill="#52514e" text-anchor="middle">official server</text>
+  <text x="600" y="634" font-size="11.5" fill="#52514e" text-anchor="middle">stdio → SSE wrapper</text>
+
+  <!-- Kubernetes -->
+  <rect x="730" y="560" width="200" height="90" rx="10" fill="#fcfcfb" stroke="#898781" stroke-width="2"/>
+  <text x="830" y="596" font-size="15.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">Kubernetes</text>
+  <text x="830" y="617" font-size="11.5" fill="#52514e" text-anchor="middle">Red Hat/containers</text>
+  <text x="830" y="634" font-size="11.5" fill="#52514e" text-anchor="middle">native SSE</text>
+
+  <!-- Prometheus -->
+  <rect x="960" y="560" width="200" height="90" rx="10" fill="#fcfcfb" stroke="#898781" stroke-width="2"/>
+  <text x="1060" y="596" font-size="15.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">Prometheus</text>
+  <text x="1060" y="617" font-size="11.5" fill="#52514e" text-anchor="middle">community server</text>
+  <text x="1060" y="634" font-size="11.5" fill="#52514e" text-anchor="middle">native SSE</text>
+
+  <!-- Footer -->
+  <text x="55" y="680" font-size="14" fill="#898781">github.com/GourmandTech/ai-engineering</text>
+  <text x="1145" y="680" font-size="14" fill="#898781" text-anchor="end">Each server speaks MCP once — the gateway handles the rest</text>
+</svg>

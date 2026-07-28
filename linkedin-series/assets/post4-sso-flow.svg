@@ -1,0 +1,64 @@
+<svg width="1200" height="820" viewBox="0 0 1200 820" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <rect width="1200" height="820" fill="#f9f9f7"/>
+
+  <!-- Title -->
+  <text x="55" y="50" font-size="27" font-weight="700" fill="#0b0b0b">Entra ID SSO — the account-linking refusal</text>
+  <text x="55" y="76" font-size="15.5" fill="#52514e">Real login flow — including the case that's supposed to fail</text>
+
+  <!-- Step 1: User -->
+  <rect x="440" y="105" width="320" height="60" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="2"/>
+  <text x="600" y="141" font-size="15" fill="#0b0b0b" text-anchor="middle">User clicks "Sign in with Microsoft"</text>
+
+  <!-- Step 2: Gateway login redirect -->
+  <rect x="400" y="200" width="400" height="65" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="2"/>
+  <text x="600" y="228" font-size="14.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">Gateway — GET /auth/sso/login/entra</text>
+  <text x="600" y="248" font-size="12.5" fill="#52514e" text-anchor="middle">Returns Microsoft authorize URL (PKCE)</text>
+
+  <!-- Step 3: Entra ID -->
+  <rect x="400" y="300" width="400" height="65" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="2"/>
+  <text x="600" y="328" font-size="14.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">Microsoft Entra ID</text>
+  <text x="600" y="348" font-size="12.5" fill="#52514e" text-anchor="middle">User authenticates (credentials, MFA)</text>
+
+  <!-- Step 4: Callback -->
+  <rect x="370" y="400" width="460" height="65" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="2"/>
+  <text x="600" y="428" font-size="14.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">Gateway — /auth/sso/callback/entra</text>
+  <text x="600" y="448" font-size="12.5" fill="#52514e" text-anchor="middle">Validates token, extracts email claim</text>
+
+  <!-- connecting arrows -->
+  <g stroke="#0b0b0b" stroke-width="2" fill="none">
+    <line x1="600" y1="165" x2="600" y2="198"/>
+    <polygon points="600,198 594,188 606,188" fill="#0b0b0b"/>
+    <line x1="600" y1="265" x2="600" y2="298"/>
+    <polygon points="600,298 594,288 606,288" fill="#0b0b0b"/>
+    <line x1="600" y1="365" x2="600" y2="398"/>
+    <polygon points="600,398 594,388 606,388" fill="#0b0b0b"/>
+    <line x1="600" y1="465" x2="600" y2="505"/>
+    <polygon points="600,505 594,495 606,495" fill="#0b0b0b"/>
+  </g>
+
+  <!-- Decision diamond -->
+  <polygon points="600,505 830,585 600,665 370,585" fill="#fcfcfb" stroke="#0b0b0b" stroke-width="2"/>
+  <text x="600" y="578" font-size="13.5" font-weight="600" fill="#0b0b0b" text-anchor="middle">Does this email already exist</text>
+  <text x="600" y="598" font-size="13.5" font-weight="600" fill="#0b0b0b" text-anchor="middle">as a local (non-SSO) account?</text>
+
+  <!-- Branch arrows -->
+  <path d="M 430 620 C 330 670, 250 700, 250 720" stroke="#d03b3b" stroke-width="2" fill="none"/>
+  <polygon points="250,720 242,710 258,710" fill="#d03b3b"/>
+  <text x="330" y="695" font-size="13" fill="#d03b3b" font-weight="700">YES</text>
+
+  <path d="M 770 620 C 870 670, 950 700, 950 720" stroke="#0ca30c" stroke-width="2" fill="none"/>
+  <polygon points="950,720 942,710 958,710" fill="#0ca30c"/>
+  <text x="855" y="695" font-size="13" fill="#0ca30c" font-weight="700">NO</text>
+
+  <!-- YES outcome: refused -->
+  <rect x="80" y="725" width="340" height="80" rx="10" fill="#fcfcfb" stroke="#d03b3b" stroke-width="2.5"/>
+  <text x="250" y="753" font-size="14.5" font-weight="700" fill="#d03b3b" text-anchor="middle">Auto-link refused</text>
+  <text x="250" y="773" font-size="12" fill="#52514e" text-anchor="middle">Prevents identity-linking abuse —</text>
+  <text x="250" y="790" font-size="12" fill="#52514e" text-anchor="middle">correct behavior, not a bug</text>
+
+  <!-- NO outcome: success -->
+  <rect x="780" y="725" width="340" height="80" rx="10" fill="#fcfcfb" stroke="#0ca30c" stroke-width="2.5"/>
+  <text x="950" y="753" font-size="14.5" font-weight="700" fill="#0ca30c" text-anchor="middle">SSO identity created, session issued</text>
+  <text x="950" y="773" font-size="12" fill="#52514e" text-anchor="middle">auth_provider: "entra" —</text>
+  <text x="950" y="790" font-size="12" fill="#52514e" text-anchor="middle">logged in</text>
+</svg>

@@ -1,0 +1,45 @@
+<svg width="1200" height="700" viewBox="0 0 1200 700" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <rect width="1200" height="700" fill="#f9f9f7"/>
+
+  <!-- Title -->
+  <text x="55" y="55" font-size="30" font-weight="700" fill="#0b0b0b">86 Tools, One Gateway</text>
+  <text x="55" y="82" font-size="16" fill="#52514e">Tool count by federated MCP server — verified exact match, not assumed</text>
+
+  <!-- Baseline axis -->
+  <line x1="300" y1="150" x2="300" y2="618" stroke="#c3c2b7" stroke-width="1.5"/>
+
+  <!-- Row 0: Azure DevOps — 40 -->
+  <text x="280" y="196" font-size="16" font-weight="700" fill="#0b0b0b" text-anchor="end">Azure DevOps</text>
+  <rect x="300" y="168" width="800" height="52" rx="6" fill="#2a78d6"/>
+  <text x="1114" y="202" font-size="20" font-weight="700" fill="#0b0b0b">40</text>
+  <text x="300" y="238" font-size="12.5" fill="#898781">official server, stdio wrapped via mcpgateway.translate</text>
+
+  <!-- Row 1: GitHub — 22 -->
+  <text x="280" y="306" font-size="16" font-weight="700" fill="#0b0b0b" text-anchor="end">GitHub</text>
+  <rect x="300" y="278" width="440" height="52" rx="6" fill="#2a78d6"/>
+  <text x="754" y="312" font-size="20" font-weight="700" fill="#0b0b0b">22</text>
+  <text x="300" y="348" font-size="12.5" fill="#898781">official server, self-hosted in-cluster (PAT stays inside AKS)</text>
+
+  <!-- Row 2: Kubernetes — 13 -->
+  <text x="280" y="416" font-size="16" font-weight="700" fill="#0b0b0b" text-anchor="end">Kubernetes</text>
+  <rect x="300" y="388" width="260" height="52" rx="6" fill="#2a78d6"/>
+  <text x="574" y="422" font-size="20" font-weight="700" fill="#0b0b0b">13</text>
+  <text x="300" y="458" font-size="12.5" fill="#898781">Red Hat/containers — native SSE, chosen over a popular alternative with an unpatched CVE</text>
+
+  <!-- Row 3: Prometheus — 6 -->
+  <text x="280" y="526" font-size="16" font-weight="700" fill="#0b0b0b" text-anchor="end">Prometheus</text>
+  <rect x="300" y="498" width="120" height="52" rx="6" fill="#2a78d6"/>
+  <text x="434" y="532" font-size="20" font-weight="700" fill="#0b0b0b">6</text>
+  <text x="300" y="568" font-size="12.5" fill="#898781">community server — native SSE, no wrapper needed</text>
+
+  <!-- Row 4: SRE Toolbox (custom) — 5 -->
+  <text x="280" y="636" font-size="16" font-weight="700" fill="#0b0b0b" text-anchor="end">SRE Toolbox</text>
+  <rect x="300" y="608" width="100" height="52" rx="6" fill="#2a78d6"/>
+  <text x="414" y="642" font-size="20" font-weight="700" fill="#0b0b0b">5</text>
+  <text x="300" y="678" font-size="12.5" fill="#898781">custom Python (FastMCP) — built for this project</text>
+
+  <!-- Total badge -->
+  <rect x="855" y="588" width="290" height="70" rx="10" fill="#fcfcfb" stroke="#2a78d6" stroke-width="2"/>
+  <text x="1000" y="618" font-size="14" fill="#52514e" text-anchor="middle">5 + 22 + 40 + 13 + 6 =</text>
+  <text x="1000" y="644" font-size="22" font-weight="700" fill="#2a78d6" text-anchor="middle">86 tools, exact match</text>
+</svg>

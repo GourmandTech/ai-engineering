@@ -1,0 +1,87 @@
+<svg width="1200" height="700" viewBox="0 0 1200 700" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <rect width="1200" height="700" fill="#f9f9f7"/>
+
+  <!-- Title -->
+  <text x="55" y="50" font-size="26" font-weight="700" fill="#0b0b0b">The SNAT Asymmetry Fix</text>
+  <text x="55" y="76" font-size="15" fill="#52514e">Azure Standard Load Balancer — two frontend IPs, one outbound rule</text>
+
+  <!-- Divider -->
+  <line x1="600" y1="105" x2="600" y2="660" stroke="#e1e0d9" stroke-width="2"/>
+
+  <!-- ============ LEFT PANEL: BEFORE ============ -->
+  <text x="300" y="130" font-size="19" font-weight="700" fill="#d03b3b" text-anchor="middle">BEFORE — external timeouts</text>
+
+  <!-- Client -->
+  <rect x="210" y="155" width="180" height="55" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="2"/>
+  <text x="300" y="188" font-size="15" fill="#0b0b0b" text-anchor="middle">Client (internet)</text>
+
+  <!-- LB -->
+  <rect x="150" y="250" width="300" height="105" rx="10" fill="#fcfcfb" stroke="#52514e" stroke-width="2"/>
+  <text x="300" y="273" font-size="14" font-weight="700" fill="#0b0b0b" text-anchor="middle">Azure Standard LB</text>
+  <text x="300" y="296" font-size="12" fill="#52514e" text-anchor="middle">FE: ingress-nginx</text>
+  <text x="300" y="315" font-size="12" fill="#d03b3b" text-anchor="middle" font-weight="600">FE: system (aksOutboundRule) ← SNAT exits here</text>
+  <text x="300" y="337" font-size="11" fill="#898781" text-anchor="middle">DisableOutboundSnat: true on inbound rule</text>
+
+  <!-- Pod -->
+  <rect x="180" y="400" width="240" height="60" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="2"/>
+  <text x="300" y="435" font-size="14" fill="#0b0b0b" text-anchor="middle">nginx-ingress pod</text>
+
+  <!-- forward path -->
+  <g stroke="#52514e" stroke-width="2" fill="none">
+    <line x1="300" y1="210" x2="300" y2="248"/>
+    <polygon points="300,248 295,238 305,238" fill="#52514e"/>
+    <line x1="300" y1="355" x2="300" y2="398"/>
+    <polygon points="300,398 295,388 305,388" fill="#52514e"/>
+  </g>
+
+  <!-- wrong-path return, dashed red, exits via system FE, dropped before reaching client -->
+  <path d="M 420 415 C 520 380, 480 300, 420 315" stroke="#d03b3b" stroke-width="2" stroke-dasharray="6 4" fill="none"/>
+  <path d="M 420 315 C 400 260, 410 210, 408 185" stroke="#d03b3b" stroke-width="2" stroke-dasharray="6 4" fill="none"/>
+  <circle cx="412" cy="172" r="12" fill="#f9f9f7" stroke="#d03b3b" stroke-width="2.5"/>
+  <line x1="406" y1="166" x2="418" y2="178" stroke="#d03b3b" stroke-width="2.5"/>
+  <line x1="418" y1="166" x2="406" y2="178" stroke="#d03b3b" stroke-width="2.5"/>
+  <text x="470" y="500" font-size="12.5" fill="#d03b3b" text-anchor="middle" font-weight="600">Response exits via the wrong</text>
+  <text x="470" y="518" font-size="12.5" fill="#d03b3b" text-anchor="middle" font-weight="600">frontend IP — client drops it</text>
+  <text x="470" y="536" font-size="12.5" fill="#d03b3b" text-anchor="middle" font-weight="600">as unrecognized. Timeout.</text>
+
+  <!-- ============ RIGHT PANEL: AFTER ============ -->
+  <text x="900" y="130" font-size="19" font-weight="700" fill="#0ca30c" text-anchor="middle">AFTER — externalTrafficPolicy: Local</text>
+
+  <!-- Client -->
+  <rect x="810" y="155" width="180" height="55" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="2"/>
+  <text x="900" y="188" font-size="15" fill="#0b0b0b" text-anchor="middle">Client (internet)</text>
+
+  <!-- LB -->
+  <rect x="750" y="250" width="300" height="105" rx="10" fill="#fcfcfb" stroke="#52514e" stroke-width="2"/>
+  <text x="900" y="273" font-size="14" font-weight="700" fill="#0b0b0b" text-anchor="middle">Azure Standard LB</text>
+  <text x="900" y="296" font-size="12" fill="#52514e" text-anchor="middle">FE: ingress-nginx</text>
+  <text x="900" y="315" font-size="12" fill="#52514e" text-anchor="middle">FE: system (aksOutboundRule)</text>
+  <text x="900" y="337" font-size="11" fill="#0ca30c" text-anchor="middle" font-weight="600">+ health-check NodePort — LB probe passes</text>
+
+  <!-- Pod -->
+  <rect x="780" y="400" width="240" height="60" rx="10" fill="#fcfcfb" stroke="#2a78d6" stroke-width="2.5"/>
+  <text x="900" y="425" font-size="13.5" fill="#0b0b0b" text-anchor="middle">nginx-ingress pod</text>
+  <text x="900" y="444" font-size="11.5" fill="#2a78d6" text-anchor="middle" font-weight="600">externalTrafficPolicy: Local</text>
+
+  <!-- forward path -->
+  <g stroke="#52514e" stroke-width="2" fill="none">
+    <line x1="900" y1="210" x2="900" y2="248"/>
+    <polygon points="900,248 895,238 905,238" fill="#52514e"/>
+  </g>
+  <line x1="900" y1="355" x2="900" y2="398" stroke="#c3c2b7" stroke-width="1.5" stroke-dasharray="3 3"/>
+  <text x="920" y="380" font-size="10.5" fill="#898781">(kube-proxy SNAT skipped)</text>
+
+  <!-- correct return path: direct pod -> client, bypassing LB -->
+  <path d="M 1030 415 C 1120 350, 1120 220, 1000 183" stroke="#0ca30c" stroke-width="2.5" fill="none"/>
+  <polygon points="1000,183 1011,181 1006,191" fill="#0ca30c"/>
+  <text x="1145" y="300" font-size="12.5" fill="#0ca30c" text-anchor="middle" font-weight="600" transform="rotate(90 1145 300)">direct pod → client</text>
+
+  <circle cx="1012" cy="172" r="12" fill="#f9f9f7" stroke="#0ca30c" stroke-width="2.5"/>
+  <path d="M 1006 172 l 4 4 l 8 -9" stroke="#0ca30c" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="900" y="536" font-size="12.5" fill="#0ca30c" text-anchor="middle" font-weight="600">Response returns directly —</text>
+  <text x="900" y="554" font-size="12.5" fill="#0ca30c" text-anchor="middle" font-weight="600">same path every time. 200 OK.</text>
+
+  <!-- Footer -->
+  <text x="55" y="675" font-size="14" fill="#898781">github.com/GourmandTech/ai-engineering</text>
+  <text x="1145" y="675" font-size="14" fill="#898781" text-anchor="end">infra/helm/values.azure.yaml — controller.service.externalTrafficPolicy</text>
+</svg>

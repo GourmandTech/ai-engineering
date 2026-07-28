@@ -1,0 +1,41 @@
+<svg width="1200" height="760" viewBox="0 0 1200 760" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <rect width="1200" height="760" fill="#f9f9f7"/>
+
+  <!-- Title -->
+  <text x="55" y="50" font-size="28" font-weight="700" fill="#0b0b0b">Where the Money Actually Goes</text>
+  <text x="55" y="76" font-size="15" fill="#52514e">Subscription-wide, month-to-date — queried live by cost-mcp-server, verified against az rest</text>
+
+  <!-- Baseline -->
+  <line x1="300" y1="150" x2="300" y2="400" stroke="#c3c2b7" stroke-width="1.5"/>
+
+  <!-- Bar 1: VMs -->
+  <text x="280" y="196" font-size="15.5" font-weight="700" fill="#0b0b0b" text-anchor="end">AKS Node Pool</text>
+  <text x="280" y="214" font-size="12" fill="#52514e" text-anchor="end">(Virtual Machines)</text>
+  <rect x="300" y="168" width="740" height="52" rx="6" fill="#2a78d6"/>
+  <text x="1054" y="202" font-size="20" font-weight="700" fill="#0b0b0b">$131.36</text>
+  <text x="300" y="238" font-size="12.5" fill="#898781">72% of spend — 2× Standard_D2s_v7, ~9% CPU utilized, 78% CPU requested</text>
+
+  <!-- Bar 2: Log Analytics -->
+  <text x="280" y="306" font-size="15.5" font-weight="700" fill="#0b0b0b" text-anchor="end">Log Analytics</text>
+  <rect x="300" y="278" width="253" height="52" rx="6" fill="#2a78d6"/>
+  <text x="567" y="312" font-size="20" font-weight="700" fill="#0b0b0b">$45.02</text>
+  <text x="300" y="348" font-size="12.5" fill="#898781">25% of spend — PerGB2018 consumption tier, correctly priced, no action</text>
+
+  <!-- Everything else -->
+  <rect x="300" y="388" width="840" height="130" rx="10" fill="#f0efec"/>
+  <text x="320" y="416" font-size="14.5" font-weight="700" fill="#0b0b0b">Everything else — 3% of spend ($6.74 total)</text>
+  <text x="320" y="442" font-size="13" fill="#52514e">Virtual Network $5.20 · Load Balancer $0.70 · Storage $0.67</text>
+  <text x="320" y="462" font-size="13" fill="#52514e">Key Vault $0.17 · Container Registry $0.00</text>
+  <text x="320" y="492" font-size="12.5" fill="#0ca30c" font-weight="600">All evaluated — no rightsizing action on any of them</text>
+
+  <!-- Recommendation callout -->
+  <rect x="140" y="560" width="920" height="150" rx="12" fill="#fcfcfb" stroke="#2a78d6" stroke-width="2.5"/>
+  <text x="600" y="595" font-size="16" font-weight="700" fill="#0b0b0b" text-anchor="middle">Recommendation: Standard_D2s_v7 → Standard_B2ms (burstable)</text>
+  <text x="600" y="620" font-size="13" fill="#52514e" text-anchor="middle">Same 2 vCPU / 8 GB — banks credits at ~9% idle CPU, still bursts to 100% when needed</text>
+  <text x="600" y="655" font-size="24" font-weight="700" fill="#2a78d6" text-anchor="middle">~$50/mo saved (~30% of compute)</text>
+  <text x="600" y="682" font-size="12.5" fill="#898781" text-anchor="middle">Guardrail respected: node pool minimum stays at 2 — SKU changes, node count never does</text>
+
+  <!-- Footer -->
+  <text x="55" y="738" font-size="14" fill="#898781">github.com/GourmandTech/ai-engineering</text>
+  <text x="1145" y="738" font-size="14" fill="#898781" text-anchor="end">docs/reports/finops-rightsizing-2026-07-22.md</text>
+</svg>

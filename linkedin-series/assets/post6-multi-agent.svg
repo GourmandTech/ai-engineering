@@ -1,0 +1,69 @@
+<svg width="1200" height="720" viewBox="0 0 1200 720" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <rect width="1200" height="720" fill="#f9f9f7"/>
+
+  <!-- Title -->
+  <text x="55" y="50" font-size="27" font-weight="700" fill="#0b0b0b">Multi-Agent Delegation — the Org Chart Pattern</text>
+  <text x="55" y="76" font-size="15.5" fill="#52514e">Each specialist keeps its own scope — the coordinator never inherits it</text>
+
+  <!-- Task -->
+  <rect x="490" y="105" width="220" height="55" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="2"/>
+  <text x="600" y="138" font-size="15" fill="#0b0b0b" text-anchor="middle">Task / User Request</text>
+
+  <!-- Coordinator -->
+  <rect x="380" y="200" width="440" height="95" rx="10" fill="#2a78d6"/>
+  <text x="600" y="232" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle">Coordinator (LangGraph)</text>
+  <text x="600" y="255" font-size="12" fill="#cde2fb" text-anchor="middle">scoped: coordinator-delegate — sees only 2 delegate tools</text>
+  <text x="600" y="272" font-size="12" fill="#cde2fb" text-anchor="middle">cannot call underlying tools directly</text>
+
+  <line x1="600" y1="160" x2="600" y2="198" stroke="#0b0b0b" stroke-width="2"/>
+  <polygon points="600,198 594,188 606,188" fill="#0b0b0b"/>
+
+  <!-- Arrows to specialists -->
+  <g stroke="#0b0b0b" stroke-width="2" fill="none">
+    <path d="M 460 295 C 400 330, 360 340, 320 378"/>
+    <polygon points="320,378 314,367 325,364" fill="#0b0b0b"/>
+    <path d="M 740 295 C 800 330, 840 340, 880 378"/>
+    <polygon points="880,378 875,364 886,367" fill="#0b0b0b"/>
+  </g>
+  <text x="360" y="330" font-size="12" fill="#0b0b0b" font-weight="600">A2A: a2a-sre-agent</text>
+  <text x="770" y="330" font-size="12" fill="#0b0b0b" font-weight="600" text-anchor="end">A2A: a2a-dev-agent</text>
+
+  <!-- sre-agent -->
+  <rect x="140" y="380" width="340" height="85" rx="10" fill="#fcfcfb" stroke="#0b0b0b" stroke-width="2.5"/>
+  <text x="310" y="415" font-size="17" font-weight="700" fill="#0b0b0b" text-anchor="middle">sre-agent</text>
+  <text x="310" y="438" font-size="12" fill="#52514e" text-anchor="middle">owned by sre-team</text>
+  <text x="310" y="454" font-size="12" fill="#52514e" text-anchor="middle">multi-hop capable (can itself delegate to dev-agent)</text>
+
+  <!-- dev-agent -->
+  <rect x="720" y="380" width="340" height="85" rx="10" fill="#fcfcfb" stroke="#0b0b0b" stroke-width="2.5"/>
+  <text x="890" y="415" font-size="17" font-weight="700" fill="#0b0b0b" text-anchor="middle">dev-agent</text>
+  <text x="890" y="438" font-size="12" fill="#52514e" text-anchor="middle">owned by dev-team</text>
+  <text x="890" y="454" font-size="12" fill="#52514e" text-anchor="middle">cross-team from the coordinator's perspective</text>
+
+  <!-- Arrows down to own scope -->
+  <g stroke="#c3c2b7" stroke-width="2" fill="none">
+    <line x1="310" y1="465" x2="310" y2="508"/>
+    <polygon points="310,508 304,498 316,498" fill="#c3c2b7"/>
+    <line x1="890" y1="465" x2="890" y2="508"/>
+    <polygon points="890,508 884,498 896,498" fill="#c3c2b7"/>
+  </g>
+
+  <!-- Own scope boxes -->
+  <rect x="140" y="510" width="340" height="90" rx="10" fill="#fcfcfb" stroke="#898781" stroke-width="2"/>
+  <text x="310" y="538" font-size="14" font-weight="700" fill="#0b0b0b" text-anchor="middle">scoped: sre-full — 86 tools</text>
+  <text x="310" y="560" font-size="12" fill="#52514e" text-anchor="middle">5 MCP servers: SRE Toolbox, GitHub,</text>
+  <text x="310" y="577" font-size="12" fill="#52514e" text-anchor="middle">Azure DevOps, Kubernetes, Prometheus</text>
+
+  <rect x="720" y="510" width="340" height="90" rx="10" fill="#fcfcfb" stroke="#898781" stroke-width="2"/>
+  <text x="890" y="538" font-size="14" font-weight="700" fill="#0b0b0b" text-anchor="middle">scoped: dev-tools — 62 tools</text>
+  <text x="890" y="560" font-size="12" fill="#52514e" text-anchor="middle">GitHub + Azure DevOps only</text>
+
+  <!-- Bug callout -->
+  <rect x="720" y="625" width="340" height="70" rx="8" fill="#fcfcfb" stroke="#d03b3b" stroke-width="2" stroke-dasharray="5 4"/>
+  <text x="890" y="648" font-size="11.5" fill="#d03b3b" font-weight="700" text-anchor="middle">Real bug: cross-team attach returned "success"</text>
+  <text x="890" y="664" font-size="11.5" fill="#d03b3b" text-anchor="middle">but stayed invisible until visibility was set on</text>
+  <text x="890" y="680" font-size="11.5" fill="#d03b3b" text-anchor="middle">BOTH the A2A agent and its linked tool</text>
+
+  <!-- Footer -->
+  <text x="55" y="712" font-size="14" fill="#898781">github.com/GourmandTech/ai-engineering</text>
+</svg>

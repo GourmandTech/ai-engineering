@@ -1,0 +1,43 @@
+<svg width="1200" height="590" viewBox="0 0 1200 590" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <rect width="1200" height="590" fill="#f9f9f7"/>
+
+  <!-- Title -->
+  <text x="55" y="50" font-size="27" font-weight="700" fill="#0b0b0b">Chaos Engineering — the Blast-Radius Boundary</text>
+  <text x="55" y="76" font-size="15" fill="#52514e">Chaos Mesh, gated per drill — one rule has no exceptions</text>
+
+  <!-- Allowed column -->
+  <text x="330" y="130" font-size="17" font-weight="700" fill="#0ca30c" text-anchor="middle">Allowed — gated, one drill at a time</text>
+  <rect x="80" y="150" width="500" height="200" rx="12" fill="#fcfcfb" stroke="#0ca30c" stroke-width="2.5"/>
+  <text x="330" y="185" font-size="14.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">Pod-kill (github-mcp-server)</text>
+  <text x="330" y="205" font-size="12.5" fill="#52514e" text-anchor="middle">PASS — recovered in 15.4s</text>
+  <line x1="120" y1="222" x2="540" y2="222" stroke="#e1e0d9" stroke-width="1"/>
+  <text x="330" y="248" font-size="14.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">Network partition (sre-agent → gateway)</text>
+  <text x="330" y="268" font-size="12.5" fill="#52514e" text-anchor="middle">PASS — failed cleanly at 21.9s,</text>
+  <text x="330" y="286" font-size="12.5" fill="#52514e" text-anchor="middle">exactly as the Post 5 timeout fix predicted</text>
+  <line x1="120" y1="303" x2="540" y2="303" stroke="#e1e0d9" stroke-width="1"/>
+  <text x="330" y="328" font-size="12" fill="#2a78d6" font-weight="600" text-anchor="middle">Both required a fresh, exact-match settings.json</text>
+  <text x="330" y="344" font-size="12" fill="#2a78d6" font-weight="600" text-anchor="middle">allow — added before, reverted right after</text>
+
+  <!-- Banned column -->
+  <text x="880" y="130" font-size="17" font-weight="700" fill="#d03b3b" text-anchor="middle">Permanently banned — no exceptions</text>
+  <rect x="630" y="150" width="500" height="200" rx="12" fill="#fcfcfb" stroke="#d03b3b" stroke-width="2.5"/>
+  <text x="880" y="195" font-size="16" font-weight="700" fill="#d03b3b" text-anchor="middle">Node-count / node-pool chaos</text>
+  <text x="880" y="222" font-size="13" fill="#52514e" text-anchor="middle">Two earlier outages on this project</text>
+  <text x="880" y="240" font-size="13" fill="#52514e" text-anchor="middle">already came from exactly this —</text>
+  <text x="880" y="258" font-size="13" fill="#52514e" text-anchor="middle">the ban is project-wide policy,</text>
+  <text x="880" y="276" font-size="13" fill="#52514e" text-anchor="middle">enforced before any drill is even designed</text>
+  <line x1="670" y1="295" x2="1090" y2="295" stroke="#e1e0d9" stroke-width="1"/>
+  <text x="880" y="320" font-size="12" fill="#d03b3b" font-weight="600" text-anchor="middle">Not a convention — a hard allow/deny</text>
+  <text x="880" y="336" font-size="12" fill="#d03b3b" font-weight="600" text-anchor="middle">pod-target list checked in code</text>
+
+  <!-- Dead-man's switch -->
+  <rect x="200" y="400" width="800" height="130" rx="12" fill="#0b0b0b"/>
+  <text x="600" y="435" font-size="16" font-weight="700" fill="#ffffff" text-anchor="middle">Every drill runs behind a dead-man's switch</text>
+  <text x="600" y="465" font-size="13.5" fill="#c3c2b7" text-anchor="middle">If the gateway's /health check stays unhealthy for more than 30 seconds,</text>
+  <text x="600" y="486" font-size="13.5" fill="#c3c2b7" text-anchor="middle">the fault CR is deleted automatically — no human has to be watching</text>
+  <text x="600" y="512" font-size="12.5" fill="#898781" text-anchor="middle">scripts/chaos_drill_lib.py</text>
+
+  <!-- Footer -->
+  <text x="55" y="562" font-size="14" fill="#898781">github.com/GourmandTech/ai-engineering</text>
+  <text x="1145" y="562" font-size="14" fill="#898781" text-anchor="end">docs/runbooks/phase6-orchestration-finops-chaos.md</text>
+</svg>

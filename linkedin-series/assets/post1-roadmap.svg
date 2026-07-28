@@ -1,0 +1,104 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <rect width="1200" height="630" fill="#f9f9f7"/>
+
+  <!-- Title block -->
+  <text x="55" y="78" font-size="34" font-weight="700" fill="#0b0b0b">ContextForge on AKS</text>
+  <text x="55" y="110" font-size="18" fill="#52514e">A solo-built, production AI gateway — six phases, end to end</text>
+
+  <!-- Phase boxes -->
+  <!-- Box geometry: x0=55 width=160 gap=26 step=186, y0=210 height=280 -->
+
+  <!-- connecting arrows (drawn first, under boxes) -->
+  <g stroke="#c3c2b7" stroke-width="2" fill="none">
+    <line x1="215" y1="350" x2="235" y2="350"/>
+    <polygon points="235,350 227,345 227,355" fill="#c3c2b7"/>
+    <line x1="401" y1="350" x2="421" y2="350"/>
+    <polygon points="421,350 413,345 413,355" fill="#c3c2b7"/>
+    <line x1="587" y1="350" x2="607" y2="350"/>
+    <polygon points="607,350 599,345 599,355" fill="#c3c2b7"/>
+    <line x1="773" y1="350" x2="793" y2="350"/>
+    <polygon points="793,350 785,345 785,355" fill="#c3c2b7"/>
+    <line x1="959" y1="350" x2="979" y2="350"/>
+    <polygon points="979,350 971,345 971,355" fill="#c3c2b7"/>
+  </g>
+
+  <!-- Box template repeated 6x via individual groups -->
+  <!-- Phase 1 -->
+  <g>
+    <rect x="55" y="210" width="160" height="280" rx="12" fill="#fcfcfb" stroke="#2a78d6" stroke-width="2"/>
+    <circle cx="135" cy="248" r="20" fill="#2a78d6"/>
+    <text x="135" y="255" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle">1</text>
+    <text x="135" y="300" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="middle">Docker</text>
+    <text x="135" y="320" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="middle">Compose</text>
+    <text x="135" y="346" font-size="12.5" fill="#52514e" text-anchor="middle">Local dev,</text>
+    <text x="135" y="364" font-size="12.5" fill="#52514e" text-anchor="middle">fundamentals</text>
+    <path d="M 118 458 l 8 8 l 14 -16" stroke="#0ca30c" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="150" y="466" font-size="12" fill="#0ca30c" font-weight="600">Complete</text>
+  </g>
+
+  <!-- Phase 2 -->
+  <g>
+    <rect x="241" y="210" width="160" height="280" rx="12" fill="#fcfcfb" stroke="#2a78d6" stroke-width="2"/>
+    <circle cx="321" cy="248" r="20" fill="#2a78d6"/>
+    <text x="321" y="255" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle">2</text>
+    <text x="321" y="300" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="middle">Minikube</text>
+    <text x="321" y="330" font-size="12.5" fill="#52514e" text-anchor="middle">Helm, k8s</text>
+    <text x="321" y="348" font-size="12.5" fill="#52514e" text-anchor="middle">primitives</text>
+    <path d="M 304 458 l 8 8 l 14 -16" stroke="#0ca30c" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="336" y="466" font-size="12" fill="#0ca30c" font-weight="600">Complete</text>
+  </g>
+
+  <!-- Phase 3 -->
+  <g>
+    <rect x="427" y="210" width="160" height="280" rx="12" fill="#fcfcfb" stroke="#2a78d6" stroke-width="2"/>
+    <circle cx="507" cy="248" r="20" fill="#2a78d6"/>
+    <text x="507" y="255" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle">3</text>
+    <text x="507" y="300" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="middle">AKS</text>
+    <text x="507" y="330" font-size="12.5" fill="#52514e" text-anchor="middle">Bicep IaC,</text>
+    <text x="507" y="348" font-size="12.5" fill="#52514e" text-anchor="middle">production-grade</text>
+    <path d="M 490 458 l 8 8 l 14 -16" stroke="#0ca30c" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="522" y="466" font-size="12" fill="#0ca30c" font-weight="600">Complete</text>
+  </g>
+
+  <!-- Phase 4 -->
+  <g>
+    <rect x="613" y="210" width="160" height="280" rx="12" fill="#fcfcfb" stroke="#2a78d6" stroke-width="2"/>
+    <circle cx="693" cy="248" r="20" fill="#2a78d6"/>
+    <text x="693" y="255" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle">4</text>
+    <text x="693" y="300" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="middle">Federated</text>
+    <text x="693" y="320" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="middle">MCP</text>
+    <text x="693" y="346" font-size="12.5" fill="#52514e" text-anchor="middle">86 tools,</text>
+    <text x="693" y="364" font-size="12.5" fill="#52514e" text-anchor="middle">1 gateway</text>
+    <path d="M 676 458 l 8 8 l 14 -16" stroke="#0ca30c" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="708" y="466" font-size="12" fill="#0ca30c" font-weight="600">Complete</text>
+  </g>
+
+  <!-- Phase 5 -->
+  <g>
+    <rect x="799" y="210" width="160" height="280" rx="12" fill="#fcfcfb" stroke="#2a78d6" stroke-width="2"/>
+    <circle cx="879" cy="248" r="20" fill="#2a78d6"/>
+    <text x="879" y="255" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle">5</text>
+    <text x="879" y="300" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="middle">AI Agent</text>
+    <text x="879" y="320" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="middle">Automation</text>
+    <text x="879" y="346" font-size="12.5" fill="#52514e" text-anchor="middle">A2A delegation,</text>
+    <text x="879" y="364" font-size="12.5" fill="#52514e" text-anchor="middle">OIDC CI/CD</text>
+    <path d="M 862 458 l 8 8 l 14 -16" stroke="#0ca30c" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="894" y="466" font-size="12" fill="#0ca30c" font-weight="600">Complete</text>
+  </g>
+
+  <!-- Phase 6 -->
+  <g>
+    <rect x="985" y="210" width="160" height="280" rx="12" fill="#fcfcfb" stroke="#2a78d6" stroke-width="2"/>
+    <circle cx="1065" cy="248" r="20" fill="#2a78d6"/>
+    <text x="1065" y="255" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle">6</text>
+    <text x="1065" y="300" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="middle">Multi-Agent</text>
+    <text x="1065" y="330" font-size="12.5" fill="#52514e" text-anchor="middle">Orchestration,</text>
+    <text x="1065" y="348" font-size="12.5" fill="#52514e" text-anchor="middle">FinOps, Chaos</text>
+    <path d="M 1048 458 l 8 8 l 14 -16" stroke="#0ca30c" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="1080" y="466" font-size="12" fill="#0ca30c" font-weight="600">Complete</text>
+  </g>
+
+  <!-- Footer -->
+  <text x="55" y="565" font-size="14" fill="#898781">github.com/GourmandTech/ai-engineering</text>
+  <text x="1145" y="565" font-size="14" fill="#898781" text-anchor="end">Follow along — one post per phase</text>
+</svg>
