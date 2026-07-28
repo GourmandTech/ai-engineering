@@ -1,6 +1,6 @@
 # Post 3 — Federated MCP Gateway
 
-**Status:** ✅ Approved
+**Status:** ✅ Scheduled — posting Thu, Jul 30, 2026 at 12:00 PM Mountain Daylight Time via LinkedIn's native scheduler
 **Series:** ContextForge AI Engineering LinkedIn Series (Post 3 of 8)
 
 ## Caption
@@ -15,15 +15,17 @@ One decision I'd flag for anyone building on this stack: for the Kubernetes serv
 
 Every stdio-only server (GitHub, Azure DevOps) gets wrapped into the gateway's SSE transport; the two that speak SSE natively (Kubernetes, Prometheus) don't need the wrapper at all. Five different vendors, five different transport assumptions, one consistent way for an agent to reach any of them.
 
+This isn't a personal detour from where the industry is headed. Anthropic donated MCP to the Linux Foundation's newly formed Agentic AI Foundation this year — vendor-neutral governance now backed by AWS, Google, Microsoft, OpenAI, Anthropic, Block, Bloomberg, and Cloudflare as platinum sponsors. For a platform or SRE team already juggling a one-off integration per tool, this is the direction that problem is being solved industry-wide, not just in this project.
+
 Post 4: the RBAC layer that decides which of these 86 tools any given agent — or human — is actually allowed to touch.
 
 Repo: github.com/GourmandTech/ai-engineering
 
-#MCP #AIEngineering #Kubernetes #Azure #PlatformEngineering
+#MCP #AIEngineering #Kubernetes #Azure #PlatformEngineering #AIGateway
 
 ---
 
-**Length check:** 1,774 characters, 273 words — within the standard LinkedIn range (~1,300–1,900 chars).
+**Length check:** ~2,240 characters, ~344 words — above the standard ~1,300–1,900 char range after adding the industry-validation paragraph (2026-07-28). Left it in deliberately: this is the addition that backs up "why this is the future of AI" for a hiring-manager audience, which is worth the extra length. Trim if you'd rather stay strictly under 1,900.
 
 ## Visuals
 
@@ -48,7 +50,7 @@ Repo: github.com/GourmandTech/ai-engineering
 
 ## Hashtag suggestions
 
-`#MCP` `#AIEngineering` `#Kubernetes` `#Azure` `#PlatformEngineering`
+`#MCP` `#AIEngineering` `#Kubernetes` `#Azure` `#PlatformEngineering` `#AIGateway`
 
 ## Fact-check notes (sourced from `CLAUDE.md`, Phase 4)
 

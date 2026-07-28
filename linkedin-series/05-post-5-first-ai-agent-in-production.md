@@ -1,6 +1,6 @@
 # Post 5 — First AI Agent in Production
 
-**Status:** Draft — batch review pending (building Posts 5-8 before review, per your instruction)
+**Status:** ✅ Scheduled — posting Mon, Aug 3, 2026 at 12:00 PM Mountain Daylight Time via LinkedIn's native scheduler
 **Series:** ContextForge AI Engineering LinkedIn Series (Post 5 of 8)
 
 ## Caption
@@ -19,7 +19,7 @@ Post 6: what happens when this agent isn't working alone anymore.
 
 Repo: github.com/GourmandTech/ai-engineering
 
-#AIEngineering #Agents #MCP #SRE #ClaudeAI
+#AIEngineering #Agents #MCP #SRE #ClaudeAI #AgentOps
 
 ---
 
@@ -42,7 +42,7 @@ Repo: github.com/GourmandTech/ai-engineering
 
 ## Hashtag suggestions
 
-`#AIEngineering` `#Agents` `#MCP` `#SRE` `#ClaudeAI`
+`#AIEngineering` `#Agents` `#MCP` `#SRE` `#ClaudeAI` `#AgentOps`
 
 ## Fact-check notes (sourced from `CLAUDE.md`, Phase 5.1)
 

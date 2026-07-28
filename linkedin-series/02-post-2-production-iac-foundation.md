@@ -1,6 +1,6 @@
 # Post 2 — Production IaC Foundation
 
-**Status:** ✅ Approved
+**Status:** ✅ Scheduled — posting Wed, Jul 29, 2026 at 12:00 PM Mountain Daylight Time via LinkedIn's native scheduler
 **Series:** ContextForge AI Engineering LinkedIn Series (Post 2 of 8)
 
 ## Still missing / open items
@@ -23,7 +23,7 @@ Post 3: what gets built on top of this foundation — five MCP servers federated
 
 Repo: github.com/GourmandTech/ai-engineering
 
-#Azure #Bicep #Kubernetes #InfrastructureAsCode #SRE
+#Azure #Bicep #Kubernetes #InfrastructureAsCode #SRE #PlatformEngineering
 
 ---
 
@@ -52,7 +52,7 @@ Repo: github.com/GourmandTech/ai-engineering
 
 ## Hashtag suggestions
 
-`#Azure` `#Bicep` `#Kubernetes` `#InfrastructureAsCode` `#SRE`
+`#Azure` `#Bicep` `#Kubernetes` `#InfrastructureAsCode` `#SRE` `#PlatformEngineering`
 
 ## Fact-check notes (sourced from `CLAUDE.md`)
 

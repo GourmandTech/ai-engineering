@@ -1,6 +1,6 @@
 # Post 8 — FinOps, Chaos Engineering & What's Next
 
-**Status:** Draft — batch review pending (final post in the batch)
+**Status:** ✅ Scheduled — posting Thu, Aug 6, 2026 at 12:00 PM Mountain Daylight Time via LinkedIn's native scheduler
 **Series:** ContextForge AI Engineering LinkedIn Series (Post 8 of 8 — capstone)
 
 ## Caption
@@ -19,7 +19,7 @@ What's next: deciding whether to act on my own agent's cost recommendation, and 
 
 Repo: github.com/GourmandTech/ai-engineering
 
-#FinOps #ChaosEngineering #AIEngineering #Azure #SRE
+#FinOps #ChaosEngineering #AIEngineering #Azure #SRE #AgenticAI
 
 ---
 
@@ -47,7 +47,7 @@ Repo: github.com/GourmandTech/ai-engineering
 
 ## Hashtag suggestions
 
-`#FinOps` `#ChaosEngineering` `#AIEngineering` `#Azure` `#SRE`
+`#FinOps` `#ChaosEngineering` `#AIEngineering` `#Azure` `#SRE` `#AgenticAI`
 
 ## Fact-check notes
 

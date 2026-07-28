@@ -1,6 +1,6 @@
 # Post 4 — Security & RBAC Safeguards
 
-**Status:** Draft — batch review pending (Posts 5-8 being built before review, per your instruction)
+**Status:** ✅ Scheduled — posting Fri, Jul 31, 2026 at 12:00 PM Mountain Daylight Time via LinkedIn's native scheduler
 **Series:** ContextForge AI Engineering LinkedIn Series (Post 4 of 8)
 
 ## Caption
@@ -21,7 +21,7 @@ Post 5: the first AI agent I let touch any of this, running under a scoped, non-
 
 Repo: github.com/GourmandTech/ai-engineering
 
-#RBAC #Security #Azure #Entra #SRE
+#RBAC #Security #Azure #Entra #SRE #ZeroTrust
 
 ---
 
@@ -43,7 +43,7 @@ Repo: github.com/GourmandTech/ai-engineering
 
 ## Hashtag suggestions
 
-`#RBAC` `#Security` `#Azure` `#Entra` `#SRE`
+`#RBAC` `#Security` `#Azure` `#Entra` `#SRE` `#ZeroTrust`
 
 ## Fact-check notes (sourced from `CLAUDE.md`, Phase 4)
 

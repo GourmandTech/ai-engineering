@@ -1,6 +1,6 @@
 # Post 1 — Why This Project / Mission
 
-**Status:** ✅ Approved
+**Status:** ✅ Published 2026-07-28 — posted live to LinkedIn (linkedin.com/in/davidjfernandez) with both images, alt text, and hashtags exactly as below
 **Series:** ContextForge AI Engineering LinkedIn Series (Post 1 of 8)
 
 ## Caption
@@ -13,7 +13,7 @@ I didn't wait to be handed that scope. I took it, and treated "I don't know Azur
 
 Now I'm applying the same approach to AI-assisted engineering — deliberately, and in public.
 
-Under my own company, GourmandTech LLC, I've spent the past year designing, building, and operating a production AI gateway from scratch: IBM ContextForge running on Azure Kubernetes Service, federating multiple MCP servers behind one authenticated endpoint, with AI agents that delegate work to each other under least-privilege, team-scoped access.
+Under my own company, GourmandTech LLC, I've spent the past year designing, building, and operating agentic AI infrastructure from scratch: IBM ContextForge running on Azure Kubernetes Service, federating multiple MCP servers behind one authenticated endpoint, with AI agents that delegate work to each other under least-privilege, team-scoped access.
 
 Six phases, solo-built: local Docker Compose → Minikube → AKS → federated MCP → AI agent automation → multi-agent orchestration with FinOps and chaos engineering.
 
@@ -23,7 +23,7 @@ Post 2: the Bicep/AKS foundation, and two production incidents it took to get th
 
 Repo: github.com/GourmandTech/ai-engineering
 
-#DevOps #SRE #Azure #Kubernetes #AIEngineering
+#DevOps #SRE #Azure #Kubernetes #AIEngineering #AgenticAI
 
 ---
 
@@ -45,7 +45,7 @@ Repo: github.com/GourmandTech/ai-engineering
 
 ## Hashtag suggestions
 
-`#DevOps` `#SRE` `#Azure` `#Kubernetes` `#AIEngineering`
+`#DevOps` `#SRE` `#Azure` `#Kubernetes` `#AIEngineering` `#AgenticAI`
 
 Kept to 5, all high-signal for the target audience (senior SRE/DevOps/platform engineers and technical recruiters), no filler tags.
 

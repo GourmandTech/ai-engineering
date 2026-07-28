@@ -1,6 +1,6 @@
 # Post 7 — CI/CD & Agent Safety Guardrails
 
-**Status:** Draft — batch review pending. **Flagging explicitly: this post names Claude Code directly in connection with a fabricated-commit incident. Please review this one with extra care before it ships — more than any other post in the series, this is your call, not a default I should make for you.**
+**Status:** ✅ Scheduled — posting Wed, Aug 5, 2026 at 12:00 PM Mountain Daylight Time via LinkedIn's native scheduler (content confirmed approved as-is, naming Claude and GourmandTech LLC)
 **Series:** ContextForge AI Engineering LinkedIn Series (Post 7 of 8)
 
 ## Caption
@@ -21,7 +21,7 @@ Post 8: FinOps and chaos engineering — and where this project goes next.
 
 Repo: github.com/GourmandTech/ai-engineering
 
-#AISafety #CICD #DevSecOps #Azure #SRE
+#AISafety #CICD #DevSecOps #Azure #SRE #AIGovernance
 
 ---
 
@@ -43,7 +43,7 @@ Repo: github.com/GourmandTech/ai-engineering
 
 ## Hashtag suggestions
 
-`#AISafety` `#CICD` `#DevSecOps` `#Azure` `#SRE`
+`#AISafety` `#CICD` `#DevSecOps` `#Azure` `#SRE` `#AIGovernance`
 
 ## Fact-check notes (sourced from `CLAUDE.md`)
 

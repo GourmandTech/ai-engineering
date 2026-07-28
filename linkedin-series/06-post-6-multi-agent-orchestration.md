@@ -1,6 +1,6 @@
 # Post 6 — Multi-Agent Orchestration
 
-**Status:** Draft — batch review pending (building Posts 5-8 before review, per your instruction)
+**Status:** ✅ Scheduled — posting Tue, Aug 4, 2026 at 12:00 PM Mountain Daylight Time via LinkedIn's native scheduler
 **Series:** ContextForge AI Engineering LinkedIn Series (Post 6 of 8)
 
 ## Caption
@@ -17,15 +17,17 @@ Root cause: a team-scoped virtual server checks RBAC twice — once at the serve
 
 "It returned success" and "it actually works" keep turning out to be two different claims on this project.
 
+This delegation pattern isn't a novelty, either. Google created A2A for exactly this problem and handed it to the Linux Foundation, where it's now backed by 150+ organizations including AWS, Cisco, IBM, Microsoft, Salesforce, SAP, and ServiceNow — Microsoft has already built it into Azure AI Foundry and Copilot Studio, AWS into Bedrock AgentCore Runtime. The coordinator/specialist boundary I built by hand here is the same shape multi-agent systems are standardizing on industry-wide.
+
 Post 7: the CI/CD pipeline this all deploys through — and two agents that handled being told "you're already approved" very differently.
 
 Repo: github.com/GourmandTech/ai-engineering
 
-#MultiAgent #AIEngineering #LangGraph #RBAC #SRE
+#MultiAgent #AIEngineering #LangGraph #RBAC #SRE #A2A
 
 ---
 
-**Length check:** 1,737 characters, 274 words — within the standard LinkedIn range (~1,300–1,900 chars).
+**Length check:** ~2,226 characters, ~347 words — above the standard ~1,300–1,900 char range after adding the industry-validation paragraph (2026-07-28). Same tradeoff as Post 3: kept for the "this is where the industry is going" evidence. Trim if you'd rather stay strictly under 1,900.
 
 ## Visuals
 
@@ -37,7 +39,7 @@ Repo: github.com/GourmandTech/ai-engineering
 
 ## Hashtag suggestions
 
-`#MultiAgent` `#AIEngineering` `#LangGraph` `#RBAC` `#SRE`
+`#MultiAgent` `#AIEngineering` `#LangGraph` `#RBAC` `#SRE` `#A2A`
 
 ## Fact-check notes (sourced from `CLAUDE.md`)
 
